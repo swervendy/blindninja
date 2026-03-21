@@ -56,11 +56,9 @@ final class TerminalHostViewController: NSViewController, TerminalViewDelegate {
         super.viewDidLayout()
         guard let termView = activeTerminalView, let sessionId = activeSessionId else { return }
         let newFrame = mainTerminalContainer.bounds.insetBy(termInset)
-        if termView.frame != newFrame {
-            termView.frame = newFrame
-            let terminal = termView.getTerminal()
-            SessionManager.shared.resizeSession(sessionId, cols: UInt16(terminal.cols), rows: UInt16(terminal.rows))
-        }
+        termView.frame = newFrame
+        let terminal = termView.getTerminal()
+        SessionManager.shared.resizeSession(sessionId, cols: UInt16(terminal.cols), rows: UInt16(terminal.rows))
     }
 
     /// Show the terminal for a given session.

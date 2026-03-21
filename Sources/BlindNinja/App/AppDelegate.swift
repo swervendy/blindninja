@@ -181,6 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         nextItem.keyEquivalentModifierMask = [.command, .shift]
         windowMenu.addItem(nextItem)
 
+
         let windowMenuItem = NSMenuItem()
         windowMenuItem.submenu = windowMenu
         mainMenu.addItem(windowMenuItem)
