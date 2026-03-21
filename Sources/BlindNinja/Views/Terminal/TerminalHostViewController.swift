@@ -50,11 +50,14 @@ final class TerminalHostViewController: NSViewController, TerminalViewDelegate {
         registerForDraggedTypes([.fileURL])
     }
 
+    private let termInset = NSEdgeInsets(top: 8, left: 8, bottom: 4, right: 4)
+
     override func viewDidLayout() {
         super.viewDidLayout()
-        // Force SwiftTerm to recalculate after layout changes
-        if let termView = activeTerminalView, let sessionId = activeSessionId {
-            termView.needsDisplay = true
+        guard let termView = activeTerminalView, let sessionId = activeSessionId else { return }
+        let newFrame = mainTerminalContainer.bounds.insetBy(termInset)
+        if termView.frame != newFrame {
+            termView.frame = newFrame
             let terminal = termView.getTerminal()
             SessionManager.shared.resizeSession(sessionId, cols: UInt16(terminal.cols), rows: UInt16(terminal.rows))
         }
@@ -73,14 +76,9 @@ final class TerminalHostViewController: NSViewController, TerminalViewDelegate {
             SessionManager.shared.registerTerminalView(termView, for: sessionId)
         }
 
-        termView.translatesAutoresizingMaskIntoConstraints = false
+        termView.frame = mainTerminalContainer.bounds.insetBy(termInset)
+        termView.autoresizingMask = [.width, .height]
         mainTerminalContainer.addSubview(termView)
-        NSLayoutConstraint.activate([
-            termView.topAnchor.constraint(equalTo: mainTerminalContainer.topAnchor, constant: 8),
-            termView.leadingAnchor.constraint(equalTo: mainTerminalContainer.leadingAnchor, constant: 8),
-            termView.trailingAnchor.constraint(equalTo: mainTerminalContainer.trailingAnchor, constant: -4),
-            termView.bottomAnchor.constraint(equalTo: mainTerminalContainer.bottomAnchor, constant: -4),
-        ])
         activeTerminalView = termView
 
         view.window?.makeFirstResponder(termView)

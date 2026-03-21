@@ -117,10 +117,11 @@ final class SessionRowView: NSView {
         let displayName = session.customName ?? session.aiName ?? session.name
         let field = NSTextField(string: displayName)
         field.font = .systemFont(ofSize: 13)
-        field.textColor = .black
-        field.backgroundColor = .white
+        field.textColor = theme.sidebarText
+        field.backgroundColor = theme.headerBackground
         field.drawsBackground = true
         field.isBordered = true
+        field.focusRingType = .exterior
         field.bezelStyle = .roundedBezel
         field.delegate = self
         field.translatesAutoresizingMaskIntoConstraints = false
