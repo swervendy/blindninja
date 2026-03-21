@@ -181,6 +181,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         nextItem.keyEquivalentModifierMask = [.command, .shift]
         windowMenu.addItem(nextItem)
 
+        let prevItem2 = NSMenuItem(title: "Previous Session (Alt)", action: #selector(previousSession), keyEquivalent: "i")
+        prevItem2.keyEquivalentModifierMask = [.command]
+        windowMenu.addItem(prevItem2)
+
+        let nextItem2 = NSMenuItem(title: "Next Session (Alt)", action: #selector(nextSession), keyEquivalent: "u")
+        nextItem2.keyEquivalentModifierMask = [.command]
+        windowMenu.addItem(nextItem2)
+
 
         let windowMenuItem = NSMenuItem()
         windowMenuItem.submenu = windowMenu
@@ -314,6 +322,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func statusItemClicked() {
+        let menu = NSMenu()
+
+        // Session list
+        let sessions = SessionManager.shared.listSessions()
+        if sessions.isEmpty {
+            let item = NSMenuItem(title: "No Sessions", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        } else {
+            for (index, session) in sessions.enumerated() {
+                let stateEmoji: String
+                switch session.state {
+                case .waiting:  stateEmoji = "\u{1F7E1}"  // yellow circle
+                case .blocked:  stateEmoji = "\u{1F534}"  // red circle
+                case .working:  stateEmoji = "\u{1F7E2}"  // green circle
+                case .idle:     stateEmoji = "\u{26AA}"    // white circle
+                case .new:      stateEmoji = "\u{26AA}"    // white circle
+                }
+                let title = "\(stateEmoji) \(session.name)"
+                let item = NSMenuItem(title: title, action: #selector(statusMenuSelectSession(_:)), keyEquivalent: index < 9 ? "\(index + 1)" : "")
+                item.keyEquivalentModifierMask = []
+                item.tag = index
+                item.target = self
+                menu.addItem(item)
+            }
+        }
+
+        menu.addItem(.separator())
+
+        // Quick actions
+        let newClaude = NSMenuItem(title: "New Claude Session", action: #selector(newClaudeSession), keyEquivalent: "")
+        newClaude.target = self
+        menu.addItem(newClaude)
+
+        let newShell = NSMenuItem(title: "New Shell Session", action: #selector(newShellSession), keyEquivalent: "")
+        newShell.target = self
+        menu.addItem(newShell)
+
+        menu.addItem(.separator())
+
+        let showWindow = NSMenuItem(title: "Show Window", action: #selector(statusMenuShowWindow), keyEquivalent: "")
+        showWindow.target = self
+        menu.addItem(showWindow)
+
+        let quit = NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.addItem(quit)
+
+        statusItem?.menu = menu
+        statusItem?.button?.performClick(nil)
+        // Clear the menu after it closes so clicks work again
+        DispatchQueue.main.async { [weak self] in
+            self?.statusItem?.menu = nil
+        }
+    }
+
+    @objc private func statusMenuSelectSession(_ sender: NSMenuItem) {
+        let sessions = SessionManager.shared.listSessions()
+        guard sender.tag >= 0, sender.tag < sessions.count else { return }
+        let session = sessions[sender.tag]
+
+        if let window = NSApp.keyWindow ?? windows.last {
+            window.makeKeyAndOrderFront(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        activeSplitVC?.selectSession(session.id)
+    }
+
+    @objc private func statusMenuShowWindow() {
         if let window = NSApp.keyWindow ?? windows.last {
             window.makeKeyAndOrderFront(nil)
         }

@@ -79,6 +79,15 @@ final class TerminalHostViewController: NSViewController, TerminalViewDelegate {
         mainTerminalContainer.addSubview(termView)
         activeTerminalView = termView
 
+        // Remove focus from drawer terminal so its cursor hides
+        drawer.resignActiveTerminalFocus()
+
+        // Hide native caret for Claude/deploy sessions (they render their own cursor)
+        let session = SessionManager.shared.listSessions().first { $0.id == sessionId }
+        if session?.sessionType != .shell {
+            DispatchQueue.main.async { Self.hideCaretView(in: termView) }
+        }
+
         view.window?.makeFirstResponder(termView)
     }
 
@@ -199,6 +208,16 @@ final class TerminalHostViewController: NSViewController, TerminalViewDelegate {
                 scroller.alphaValue = 0
             }
             hideScroller(in: subview)
+        }
+    }
+
+    /// Hide SwiftTerm's CaretView (native cursor) — used for Claude/deploy sessions that render their own cursor
+    static func hideCaretView(in view: NSView) {
+        for subview in view.subviews {
+            if String(describing: type(of: subview)) == "CaretView" {
+                subview.isHidden = true
+                return
+            }
         }
     }
 

@@ -48,11 +48,14 @@ final class StateDetector {
             "review and",
             "before proceeding",
             "to continue",
+            "accept edits",
+            "Do you want to overwrite",
         ]
 
         // Claude is at a prompt (waiting for user input)
         let promptStrings = [
             "❯\\s*$",
+            "\u{203A}\\s*$",   // › (single right-pointing angle quotation mark)
             "\\? for shortcuts",
         ]
 
@@ -63,14 +66,15 @@ final class StateDetector {
             "\\(base\\).*%\\s*$", // conda prompt
         ]
 
-        func compile(_ patterns: [String]) -> [NSRegularExpression] {
-            patterns.compactMap { try? NSRegularExpression(pattern: $0, options: []) }
+        func compile(_ patterns: [String], options: NSRegularExpression.Options = []) -> [NSRegularExpression] {
+            patterns.compactMap { try? NSRegularExpression(pattern: $0, options: options) }
         }
 
         claudeActivePatterns = compile(activeStrings)
         claudeBlockedPatterns = compile(blockedStrings)
-        claudePromptPatterns = compile(promptStrings)
-        claudeExitPatterns = compile(exitStrings)
+        // Use anchorsMatchLines so $ matches end of each line, not just end of string
+        claudePromptPatterns = compile(promptStrings, options: .anchorsMatchLines)
+        claudeExitPatterns = compile(exitStrings, options: .anchorsMatchLines)
         sessionIdPattern = try! NSRegularExpression(
             pattern: "(?:resume|session|conversation)[:\\s_-]*([0-9a-f-]{36})",
             options: .caseInsensitive

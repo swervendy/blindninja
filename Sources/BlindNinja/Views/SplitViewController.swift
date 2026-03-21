@@ -82,7 +82,7 @@ final class MainSplitViewController: NSSplitViewController {
     }
 
     func selectPreviousSession() {
-        let sessions = SessionManager.shared.listSessions()
+        let sessions = SessionManager.shared.listSessions().filter { $0.sessionType != .shell }
         guard let current = activeSessionId,
               let idx = sessions.firstIndex(where: { $0.id == current }),
               idx > 0 else { return }
@@ -90,7 +90,7 @@ final class MainSplitViewController: NSSplitViewController {
     }
 
     func selectNextSession() {
-        let sessions = SessionManager.shared.listSessions()
+        let sessions = SessionManager.shared.listSessions().filter { $0.sessionType != .shell }
         guard let current = activeSessionId,
               let idx = sessions.firstIndex(where: { $0.id == current }),
               idx < sessions.count - 1 else { return }

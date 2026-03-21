@@ -142,6 +142,13 @@ final class DrawerViewController: NSViewController, TerminalViewDelegate {
 
     // MARK: - Public
 
+    func resignActiveTerminalFocus() {
+        if let idx = activeTabIndex, idx < tabs.count,
+           let termView = drawerTerminalViews[tabs[idx]] {
+            termView.hasFocus = false
+        }
+    }
+
     func addSession(_ sessionId: String) {
         if tabs.contains(sessionId) { return }
         tabs.append(sessionId)
@@ -374,7 +381,11 @@ final class DrawerViewController: NSViewController, TerminalViewDelegate {
                 isActive: isActive,
                 theme: currentTheme,
                 onSelect: { [weak self] in self?.selectTab(at: index) },
-                onClose: { [weak self] in self?.closeTab(at: index) }
+                onClose: { [weak self] in self?.closeTab(at: index) },
+                onRename: { [weak self] newName in
+                    SessionManager.shared.renameSession(sessionId, name: newName)
+                    self?.rebuildTabs()
+                }
             )
             tabBar.addArrangedSubview(tabView)
         }
@@ -484,14 +495,22 @@ final class DragHandleView: NSView {
 
 // MARK: - Drawer Tab
 
-private final class DrawerTab: NSView {
+private final class DrawerTab: NSView, NSTextFieldDelegate {
     private var selectAction: (() -> Void)?
+    private var onRename: ((String) -> Void)?
+    private var label: NSTextField!
+    private var renameField: NSTextField?
+    private var theme: AppTheme
+    private var isEndingRename = false
 
     init(title: String, isActive: Bool, theme: AppTheme,
-         onSelect: @escaping () -> Void, onClose: @escaping () -> Void) {
+         onSelect: @escaping () -> Void, onClose: @escaping () -> Void,
+         onRename: @escaping (String) -> Void) {
+        self.theme = theme
         super.init(frame: .zero)
         wantsLayer = true
         self.selectAction = onSelect
+        self.onRename = onRename
 
         if isActive {
             layer?.backgroundColor = theme.terminal.background.cgColor
@@ -506,6 +525,7 @@ private final class DrawerTab: NSView {
         label.textColor = isActive ? theme.sidebarText : theme.sidebarTextSecondary
         label.lineBreakMode = .byTruncatingTail
         label.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        self.label = label
 
         let closeBtn = DrawerCallbackButton(title: "\u{2715}", action: onClose)
         closeBtn.bezelStyle = .recessed
@@ -529,14 +549,62 @@ private final class DrawerTab: NSView {
             heightAnchor.constraint(equalToConstant: 26),
         ])
 
-        let click = NSClickGestureRecognizer(target: self, action: #selector(clicked))
-        addGestureRecognizer(click)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    @objc private func clicked() {
-        selectAction?()
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 {
+            startRename()
+        } else {
+            selectAction?()
+        }
+    }
+
+    func startRename() {
+        guard renameField == nil else { return }
+        isEndingRename = false
+        let field = NSTextField(string: label.stringValue)
+        field.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
+        field.textColor = theme.sidebarText
+        field.backgroundColor = theme.terminal.background
+        field.drawsBackground = true
+        field.isBordered = true
+        field.focusRingType = .none
+        field.delegate = self
+        field.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(field)
+        NSLayoutConstraint.activate([
+            field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            field.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24),
+            field.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+        label.isHidden = true
+        renameField = field
+        window?.makeFirstResponder(field)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Rename", action: #selector(ctxRename), keyEquivalent: "")
+        for item in menu.items { item.target = self }
+        return menu
+    }
+
+    @objc private func ctxRename() { startRename() }
+
+    func control(_ control: NSControl, textShouldEndEditing fieldEditor: NSText) -> Bool {
+        guard !isEndingRename else { return true }
+        isEndingRename = true
+        let newName = fieldEditor.string.trimmingCharacters(in: .whitespaces)
+        label.isHidden = false
+        renameField?.removeFromSuperview()
+        renameField = nil
+        if !newName.isEmpty {
+            label.stringValue = newName
+            onRename?(newName)
+        }
+        return true
     }
 }
 
