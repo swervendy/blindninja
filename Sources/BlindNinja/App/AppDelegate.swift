@@ -324,8 +324,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func statusItemClicked() {
         let menu = NSMenu()
 
-        // Session list
-        let sessions = SessionManager.shared.listSessions()
+        // Session list (exclude shell sessions, they live in the drawer)
+        let allSessions = SessionManager.shared.listSessions()
+        let sessions = allSessions.filter { $0.sessionType != .shell }
         if sessions.isEmpty {
             let item = NSMenuItem(title: "No Sessions", action: nil, keyEquivalent: "")
             item.isEnabled = false
@@ -334,10 +335,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for (index, session) in sessions.enumerated() {
                 let stateEmoji: String
                 switch session.state {
-                case .waiting:  stateEmoji = "\u{1F7E1}"  // yellow circle
-                case .blocked:  stateEmoji = "\u{1F534}"  // red circle
-                case .working:  stateEmoji = "\u{1F7E2}"  // green circle
-                case .idle:     stateEmoji = "\u{26AA}"    // white circle
+                case .working:  stateEmoji = "\u{1F7E1}"  // yellow circle — working
+                case .waiting:  stateEmoji = "\u{1F534}"  // red circle — needs input
+                case .blocked:  stateEmoji = "\u{1F534}"  // red circle — needs approval
+                case .idle:     stateEmoji = "\u{1F7E2}"  // green circle — idle
                 case .new:      stateEmoji = "\u{26AA}"    // white circle
                 }
                 let title = "\(stateEmoji) \(session.name)"
@@ -378,7 +379,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func statusMenuSelectSession(_ sender: NSMenuItem) {
-        let sessions = SessionManager.shared.listSessions()
+        let sessions = SessionManager.shared.listSessions().filter { $0.sessionType != .shell }
         guard sender.tag >= 0, sender.tag < sessions.count else { return }
         let session = sessions[sender.tag]
 

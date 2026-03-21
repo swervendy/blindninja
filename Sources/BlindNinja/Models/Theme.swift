@@ -22,10 +22,10 @@ struct AppTheme {
     let hoverBackground: NSColor
 
     // State dots
-    let waitingColor: NSColor   // amber/yellow — session needs user input
-    let workingColor: NSColor   // green — bot is actively processing
+    let waitingColor: NSColor   // red — session needs user input (prompt/approval)
+    let workingColor: NSColor   // yellow/amber — bot is actively processing
     let blockedColor: NSColor   // red — blocked on approval
-    let idleColor: NSColor      // gray
+    let idleColor: NSColor      // green — session is idle
 
     // Terminal
     let terminal: TerminalColors
@@ -43,10 +43,10 @@ extension AppTheme {
         borderColor: NSColor(hex: "#252838"),
         selectedBackground: NSColor(hex: "#1e2235"),
         hoverBackground: NSColor(hex: "#1a1e30"),
-        waitingColor: NSColor(hex: "#e8c468"),
-        workingColor: NSColor(hex: "#7ee0a5"),
+        waitingColor: NSColor(hex: "#e07878"),
+        workingColor: NSColor(hex: "#e8c468"),
         blockedColor: NSColor(hex: "#e07878"),
-        idleColor: NSColor(hex: "#555555"),
+        idleColor: NSColor(hex: "#7ee0a5"),
         terminal: TerminalColors(
             background: NSColor(hex: "#1a1e2e"),
             foreground: NSColor(hex: "#b8bcc8"),
@@ -73,10 +73,10 @@ extension AppTheme {
         borderColor: NSColor(hex: "#1a1a1a"),
         selectedBackground: NSColor(hex: "#1a1a1a"),
         hoverBackground: NSColor(hex: "#151515"),
-        waitingColor: NSColor(hex: "#e8c468"),
-        workingColor: NSColor(hex: "#7ee0a5"),
+        waitingColor: NSColor(hex: "#e07878"),
+        workingColor: NSColor(hex: "#e8c468"),
         blockedColor: NSColor(hex: "#e07878"),
-        idleColor: NSColor(hex: "#555555"),
+        idleColor: NSColor(hex: "#7ee0a5"),
         terminal: TerminalColors(
             background: NSColor(hex: "#0d0d0d"),
             foreground: NSColor(hex: "#c8c8c8"),
@@ -103,10 +103,10 @@ extension AppTheme {
         borderColor: NSColor(hex: "#073642"),
         selectedBackground: NSColor(hex: "#073642"),
         hoverBackground: NSColor(hex: "#053340"),
-        waitingColor: NSColor(hex: "#b58900"),
-        workingColor: NSColor(hex: "#859900"),
+        waitingColor: NSColor(hex: "#dc322f"),
+        workingColor: NSColor(hex: "#b58900"),
         blockedColor: NSColor(hex: "#dc322f"),
-        idleColor: NSColor(hex: "#586e75"),
+        idleColor: NSColor(hex: "#859900"),
         terminal: TerminalColors(
             background: NSColor(hex: "#002b36"),
             foreground: NSColor(hex: "#839496"),
@@ -133,10 +133,10 @@ extension AppTheme {
         borderColor: NSColor(hex: "#26233a"),
         selectedBackground: NSColor(hex: "#26233a"),
         hoverBackground: NSColor(hex: "#1f1d2e"),
-        waitingColor: NSColor(hex: "#f6c177"),
-        workingColor: NSColor(hex: "#31748f"),
+        waitingColor: NSColor(hex: "#eb6f92"),
+        workingColor: NSColor(hex: "#f6c177"),
         blockedColor: NSColor(hex: "#eb6f92"),
-        idleColor: NSColor(hex: "#555170"),
+        idleColor: NSColor(hex: "#31748f"),
         terminal: TerminalColors(
             background: NSColor(hex: "#191724"),
             foreground: NSColor(hex: "#e0def4"),
@@ -163,10 +163,10 @@ extension AppTheme {
         borderColor: NSColor(hex: "#d2d2d7"),
         selectedBackground: NSColor(hex: "#e8e8ed"),
         hoverBackground: NSColor(hex: "#ececf0"),
-        waitingColor: NSColor(hex: "#a05e00"),
-        workingColor: NSColor(hex: "#248a3d"),
+        waitingColor: NSColor(hex: "#d70015"),
+        workingColor: NSColor(hex: "#a05e00"),
         blockedColor: NSColor(hex: "#d70015"),
-        idleColor: NSColor(hex: "#aeaeb2"),
+        idleColor: NSColor(hex: "#248a3d"),
         terminal: TerminalColors(
             background: NSColor(hex: "#ffffff"),
             foreground: NSColor(hex: "#1d1d1f"),
@@ -193,10 +193,10 @@ extension AppTheme {
         borderColor: NSColor(hex: "#ddd5c1"),
         selectedBackground: NSColor(hex: "#eee8d5"),
         hoverBackground: NSColor(hex: "#f0eadb"),
-        waitingColor: NSColor(hex: "#b58900"),
-        workingColor: NSColor(hex: "#859900"),
+        waitingColor: NSColor(hex: "#dc322f"),
+        workingColor: NSColor(hex: "#b58900"),
         blockedColor: NSColor(hex: "#dc322f"),
-        idleColor: NSColor(hex: "#93a1a1"),
+        idleColor: NSColor(hex: "#859900"),
         terminal: TerminalColors(
             background: NSColor(hex: "#fdf6e3"),
             foreground: NSColor(hex: "#586e75"),
