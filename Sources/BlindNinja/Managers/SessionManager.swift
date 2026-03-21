@@ -165,6 +165,31 @@ final class SessionManager {
         notifySessionsChanged()
     }
 
+    /// Extract Claude conversation ID from terminal title set by Claude Code.
+    /// Claude Code sets the title to formats like "Claude Code - <uuid>" or just contains a UUID.
+    private static let uuidPattern = try! NSRegularExpression(
+        pattern: "([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+        options: .caseInsensitive
+    )
+
+    func parseTerminalTitle(_ sessionId: String, title: String) {
+        lock.lock()
+        guard let session = sessions[sessionId],
+              session.info.claudeSessionId == nil,
+              session.info.sessionType == .claude || session.info.sessionType == .deploy else {
+            lock.unlock()
+            return
+        }
+        let range = NSRange(title.startIndex..., in: title)
+        if let match = Self.uuidPattern.firstMatch(in: title, range: range),
+           let idRange = Range(match.range(at: 1), in: title) {
+            let claudeId = String(title[idRange])
+            session.info.claudeSessionId = claudeId
+            session.info.claudeResumeCmd = "claude --resume \(claudeId)"
+        }
+        lock.unlock()
+    }
+
     func focusSession(_ sessionId: String) {
         lock.lock()
         sessions[sessionId]?.info.hasUnread = false

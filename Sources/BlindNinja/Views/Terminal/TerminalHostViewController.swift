@@ -50,6 +50,16 @@ final class TerminalHostViewController: NSViewController, TerminalViewDelegate {
         registerForDraggedTypes([.fileURL])
     }
 
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        // Force SwiftTerm to recalculate after layout changes
+        if let termView = activeTerminalView, let sessionId = activeSessionId {
+            termView.needsDisplay = true
+            let terminal = termView.getTerminal()
+            SessionManager.shared.resizeSession(sessionId, cols: UInt16(terminal.cols), rows: UInt16(terminal.rows))
+        }
+    }
+
     /// Show the terminal for a given session.
     func showSession(_ sessionId: String) {
         activeTerminalView?.removeFromSuperview()
@@ -63,19 +73,15 @@ final class TerminalHostViewController: NSViewController, TerminalViewDelegate {
             SessionManager.shared.registerTerminalView(termView, for: sessionId)
         }
 
-        // Use frame-based layout — SwiftTerm's internal rendering breaks with autolayout
-        let inset = NSEdgeInsets(top: 8, left: 8, bottom: 4, right: 4)
-        termView.autoresizingMask = [.width, .height]
+        termView.translatesAutoresizingMaskIntoConstraints = false
         mainTerminalContainer.addSubview(termView)
+        NSLayoutConstraint.activate([
+            termView.topAnchor.constraint(equalTo: mainTerminalContainer.topAnchor, constant: 8),
+            termView.leadingAnchor.constraint(equalTo: mainTerminalContainer.leadingAnchor, constant: 8),
+            termView.trailingAnchor.constraint(equalTo: mainTerminalContainer.trailingAnchor, constant: -4),
+            termView.bottomAnchor.constraint(equalTo: mainTerminalContainer.bottomAnchor, constant: -4),
+        ])
         activeTerminalView = termView
-
-        // Defer frame calculation until layout is complete (bounds may be zero on first call)
-        DispatchQueue.main.async { [weak self] in
-            guard let container = self?.mainTerminalContainer else { return }
-            termView.frame = container.bounds.insetBy(inset)
-            let terminal = termView.getTerminal()
-            SessionManager.shared.resizeSession(sessionId, cols: UInt16(terminal.cols), rows: UInt16(terminal.rows))
-        }
 
         view.window?.makeFirstResponder(termView)
     }
@@ -143,7 +149,6 @@ final class TerminalHostViewController: NSViewController, TerminalViewDelegate {
         termView.wantsLayer = true
         termView.layer?.masksToBounds = true
         termView.terminalDelegate = self
-        termView.autoresizingMask = [.width, .height]
 
         let font = NSFont(name: "SF Mono", size: fontSize)
             ?? NSFont(name: "Menlo", size: fontSize)
@@ -208,7 +213,10 @@ final class TerminalHostViewController: NSViewController, TerminalViewDelegate {
         SessionManager.shared.resizeSession(sessionId, cols: UInt16(newCols), rows: UInt16(newRows))
     }
 
-    func setTerminalTitle(source: TerminalView, title: String) {}
+    func setTerminalTitle(source: TerminalView, title: String) {
+        guard let sessionId = activeSessionId else { return }
+        SessionManager.shared.parseTerminalTitle(sessionId, title: title)
+    }
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
         guard let sessionId = activeSessionId else { return }

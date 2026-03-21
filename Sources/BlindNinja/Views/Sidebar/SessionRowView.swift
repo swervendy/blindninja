@@ -48,6 +48,9 @@ final class SessionRowView: NSView {
         nameField.stringValue = displayName
         nameField.font = .systemFont(ofSize: 12, weight: session.hasUnread ? .semibold : .medium)
         nameField.textColor = isActive ? theme.sidebarText : theme.sidebarText.withAlphaComponent(0.75)
+        nameField.isBordered = false
+        nameField.isEditable = false
+        nameField.drawsBackground = false
         nameField.lineBreakMode = .byTruncatingTail
         nameField.maximumNumberOfLines = 1
         nameField.translatesAutoresizingMaskIntoConstraints = false
@@ -107,12 +110,6 @@ final class SessionRowView: NSView {
             options: [.activeInActiveApp, .mouseEnteredAndExited, .inVisibleRect],
             owner: self
         ))
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        if event.clickCount == 1 {
-            onSelect?()
-        }
     }
 
     func startRename() {

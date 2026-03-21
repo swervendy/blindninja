@@ -45,6 +45,7 @@ final class SidebarViewController: NSViewController {
         tableView.backgroundColor = .clear
         tableView.intercellSpacing = NSSize(width: 0, height: 1)
         tableView.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        tableView.action = #selector(tableViewClick(_:))
         tableView.doubleAction = #selector(tableViewDoubleClick(_:))
         tableView.target = self
         tableView.registerForDraggedTypes([sessionDragType])
@@ -144,6 +145,12 @@ final class SidebarViewController: NSViewController {
         tableView.reloadData()
         rebuildHeader()
         rebuildFooter()
+    }
+
+    @objc private func tableViewClick(_ sender: Any) {
+        let row = tableView.clickedRow
+        guard row >= 0, case .session(let s) = rows[row] else { return }
+        onSessionSelected?(s.id)
     }
 
     @objc private func tableViewDoubleClick(_ sender: Any) {
