@@ -112,6 +112,13 @@ final class MainSplitViewController: NSSplitViewController {
     }
 
     func renameCurrentSession() {
+        // If the drawer's terminal has focus, rename the active shell tab
+        if let firstResponder = view.window?.firstResponder as? NSView,
+           firstResponder.isDescendant(of: terminalHost.drawer.view),
+           terminalHost.drawer.expanded {
+            terminalHost.drawer.startRenameActiveTab()
+            return
+        }
         guard let id = activeSessionId else { return }
         sidebar.startRename(sessionId: id)
     }

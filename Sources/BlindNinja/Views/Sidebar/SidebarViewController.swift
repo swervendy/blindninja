@@ -25,7 +25,9 @@ final class SidebarViewController: NSViewController {
     private var shortcutsGuide: NSView?
     private var isRenaming = false
     private var worktreeToggle: NSSwitch?
+    private var notifSoundToggle: NSSwitch?
     private var selectedSessionIds: Set<String> = []
+    private var lastClickedRow: Int?
 
     override func loadView() {
         view = NSView()
@@ -154,15 +156,35 @@ final class SidebarViewController: NSViewController {
         guard row >= 0, case .session(let s) = rows[row] else { return }
 
         let shiftHeld = NSEvent.modifierFlags.contains(.shift)
+        let cmdHeld = NSEvent.modifierFlags.contains(.command)
         if shiftHeld {
+            // Shift-click: select range from anchor to clicked row
+            if let anchor = lastClickedRow {
+                let lo = min(anchor, row)
+                let hi = max(anchor, row)
+                selectedSessionIds.removeAll()
+                for i in lo...hi {
+                    if case .session(let rs) = rows[i] {
+                        selectedSessionIds.insert(rs.id)
+                    }
+                }
+            } else {
+                selectedSessionIds.insert(s.id)
+                lastClickedRow = row
+            }
+            tableView.reloadData()
+        } else if cmdHeld {
+            // Cmd-click: toggle individual selection
             if selectedSessionIds.contains(s.id) {
                 selectedSessionIds.remove(s.id)
             } else {
                 selectedSessionIds.insert(s.id)
             }
+            lastClickedRow = row
             tableView.reloadData()
         } else {
             selectedSessionIds.removeAll()
+            lastClickedRow = row
             tableView.reloadData()
             onSessionSelected?(s.id)
         }
@@ -450,7 +472,7 @@ final class SidebarViewController: NSViewController {
         shortcutsBtn.translatesAutoresizingMaskIntoConstraints = false
 
         // Worktree toggle
-        let wtLabel = NSTextField(labelWithString: "WORKTREE")
+        let wtLabel = NSTextField(labelWithString: "WORKTREE MODE")
         wtLabel.font = .systemFont(ofSize: 9, weight: .semibold)
         wtLabel.textColor = currentTheme.sidebarTextSecondary.withAlphaComponent(0.4)
         wtLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -463,12 +485,28 @@ final class SidebarViewController: NSViewController {
         wtSwitch.translatesAutoresizingMaskIntoConstraints = false
         worktreeToggle = wtSwitch
 
+        // Notification sound toggle
+        let nsLabel = NSTextField(labelWithString: "NOTIFICATION SOUNDS")
+        nsLabel.font = .systemFont(ofSize: 9, weight: .semibold)
+        nsLabel.textColor = currentTheme.sidebarTextSecondary.withAlphaComponent(0.4)
+        nsLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let nsSwitch = NSSwitch()
+        nsSwitch.controlSize = .mini
+        nsSwitch.state = UserDefaults.standard.bool(forKey: "enableNotificationSounds") ? .on : .off
+        nsSwitch.target = self
+        nsSwitch.action = #selector(notifSoundToggleChanged(_:))
+        nsSwitch.translatesAutoresizingMaskIntoConstraints = false
+        notifSoundToggle = nsSwitch
+
         container.addSubview(divider)
         container.addSubview(label)
         container.addSubview(shortcutsBtn)
         container.addSubview(popup)
         container.addSubview(wtLabel)
         container.addSubview(wtSwitch)
+        container.addSubview(nsLabel)
+        container.addSubview(nsSwitch)
 
         NSLayoutConstraint.activate([
             divider.topAnchor.constraint(equalTo: container.topAnchor),
@@ -491,7 +529,13 @@ final class SidebarViewController: NSViewController {
 
             wtSwitch.centerYAnchor.constraint(equalTo: wtLabel.centerYAnchor),
             wtSwitch.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
-            wtSwitch.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -14),
+
+            nsLabel.topAnchor.constraint(equalTo: wtSwitch.bottomAnchor, constant: 12),
+            nsLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+
+            nsSwitch.centerYAnchor.constraint(equalTo: nsLabel.centerYAnchor),
+            nsSwitch.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            nsSwitch.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -14),
         ])
 
         return container
@@ -499,6 +543,10 @@ final class SidebarViewController: NSViewController {
 
     @objc private func worktreeToggleChanged(_ sender: NSSwitch) {
         UserDefaults.standard.set(sender.state == .on, forKey: "enableWorktree")
+    }
+
+    @objc private func notifSoundToggleChanged(_ sender: NSSwitch) {
+        UserDefaults.standard.set(sender.state == .on, forKey: "enableNotificationSounds")
     }
 
     @objc private func themeDropdownChanged(_ sender: NSPopUpButton) {
@@ -566,10 +614,12 @@ extension SidebarViewController: NSTableViewDataSource, NSTableViewDelegate {
                 guard let self = self else { return }
                 if !self.selectedSessionIds.isEmpty {
                     // Kill all selected sessions
-                    for id in self.selectedSessionIds {
+                    let idsToKill = self.selectedSessionIds
+                    self.selectedSessionIds.removeAll()
+                    for id in idsToKill {
                         self.onSessionKill?(id)
                     }
-                    self.selectedSessionIds.removeAll()
+                    self.forceRefreshSessions()
                 } else {
                     self.onSessionKill?(s.id)
                 }

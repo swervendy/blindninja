@@ -21,10 +21,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             currentTheme = AppTheme.byId(savedId)
         }
 
-        // Set app icon from bundled PNG
-        let iconPath = "/Users/aaron/Documents/Projects/blind-ninja-app/src-tauri/icons/icon.png"
-        if let icon = NSImage(contentsOfFile: iconPath) {
-            NSApp.applicationIconImage = icon
+        // Set app icon from bundled resource
+        if let iconPath = Bundle.main.path(forResource: "AppIcon", ofType: "png") {
+            if let icon = NSImage(contentsOfFile: iconPath) {
+                NSApp.applicationIconImage = icon
+            }
+        } else {
+            // Fallback: load from source directory during development
+            let devPath = "\(FileManager.default.currentDirectoryPath)/Sources/BlindNinja/Resources/AppIcon.png"
+            if let icon = NSImage(contentsOfFile: devPath) {
+                NSApp.applicationIconImage = icon
+            }
         }
 
         // Build the menu bar
@@ -156,6 +163,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         themeItem.submenu = themeMenu
         viewMenu.addItem(themeItem)
 
+        viewMenu.addItem(.separator())
+        let notifSoundItem = NSMenuItem(title: "Toggle Notification Sounds", action: #selector(toggleNotificationSounds), keyEquivalent: "n")
+        notifSoundItem.keyEquivalentModifierMask = [.command, .shift]
+        viewMenu.addItem(notifSoundItem)
+
         let viewMenuItem = NSMenuItem()
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
@@ -250,6 +262,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleDrawer() {
         activeSplitVC?.toggleDrawer()
+    }
+
+    @objc private func toggleNotificationSounds() {
+        let current = UserDefaults.standard.bool(forKey: "enableNotificationSounds")
+        UserDefaults.standard.set(!current, forKey: "enableNotificationSounds")
     }
 
     @objc private func switchToSessionByIndex(_ sender: NSMenuItem) {

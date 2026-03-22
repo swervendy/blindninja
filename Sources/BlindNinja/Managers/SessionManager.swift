@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftTerm
 
@@ -211,6 +212,36 @@ final class SessionManager {
         options: .caseInsensitive
     )
 
+    /// Match OSC title sequences: ESC ] 0; title BEL  or  ESC ] 2; title BEL/ST
+    private static let oscTitlePattern = try! NSRegularExpression(
+        pattern: "\\x1b\\][02];([^\\x07\\x1b]*?)(?:\\x07|\\x1b\\\\)",
+        options: []
+    )
+
+    /// Parse OSC title escape sequences from raw terminal output to extract Claude session UUID.
+    /// This works for all sessions, not just the one currently displayed.
+    private func parseOSCTitle(from raw: String, sessionId: String) {
+        let range = NSRange(raw.startIndex..., in: raw)
+        let matches = Self.oscTitlePattern.matches(in: raw, range: range)
+        for match in matches {
+            guard let titleRange = Range(match.range(at: 1), in: raw) else { continue }
+            let title = String(raw[titleRange])
+            // Try to extract a UUID from the title
+            let titleNSRange = NSRange(title.startIndex..., in: title)
+            if let uuidMatch = Self.uuidPattern.firstMatch(in: title, range: titleNSRange),
+               let idRange = Range(uuidMatch.range(at: 1), in: title) {
+                let claudeId = String(title[idRange])
+                lock.lock()
+                if let session = sessions[sessionId], session.info.claudeSessionId == nil {
+                    session.info.claudeSessionId = claudeId
+                    session.info.claudeResumeCmd = "claude --resume \(claudeId)"
+                }
+                lock.unlock()
+                return
+            }
+        }
+    }
+
     func parseTerminalTitle(_ sessionId: String, title: String) {
         lock.lock()
         guard let session = sessions[sessionId],
@@ -347,17 +378,34 @@ final class SessionManager {
         }
 
         for saved in savedSessions {
-            let info = saved.info
+            // Try to recover Claude session UUID from saved output buffer if not already set
+            var info = saved.info
+            if info.claudeSessionId == nil && (info.sessionType == SessionType.claude || info.sessionType == SessionType.deploy) {
+                let bufferRange = NSRange(saved.outputBuffer.startIndex..., in: saved.outputBuffer)
+                let oscMatches = Self.oscTitlePattern.matches(in: saved.outputBuffer, range: bufferRange)
+                for oscMatch in oscMatches {
+                    guard let titleRange = Range(oscMatch.range(at: 1), in: saved.outputBuffer) else { continue }
+                    let title = String(saved.outputBuffer[titleRange])
+                    let titleNSRange = NSRange(title.startIndex..., in: title)
+                    if let uuidMatch = Self.uuidPattern.firstMatch(in: title, range: titleNSRange),
+                       let idRange = Range(uuidMatch.range(at: 1), in: title) {
+                        let claudeId = String(title[idRange])
+                        info.claudeSessionId = claudeId
+                        info.claudeResumeCmd = "claude --resume \(claudeId)"
+                        break
+                    }
+                }
+            }
 
             // Determine command to re-run
             let command: String?
-            if info.sessionType == .claude {
+            if info.sessionType == SessionType.claude {
                 if let resumeCmd = info.claudeResumeCmd {
                     command = resumeCmd
                 } else {
                     command = "claude"
                 }
-            } else if info.sessionType == .deploy {
+            } else if info.sessionType == SessionType.deploy {
                 command = Self.deployCommand
             } else {
                 command = nil
@@ -377,12 +425,11 @@ final class SessionManager {
             }
 
             // Restore session with the same ID
-            var restoredInfo = info
-            restoredInfo.pid = pty.pid
-            restoredInfo.state = .idle
-            restoredInfo.hasUnread = false
+            info.pid = pty.pid
+            info.state = SessionState.idle
+            info.hasUnread = false
 
-            let inner = SessionInner(info: restoredInfo, pty: pty, claudeActive: info.claudeActive)
+            let inner = SessionInner(info: info, pty: pty, claudeActive: info.claudeActive)
             inner.outputBuffer = saved.outputBuffer
 
             lock.lock()
@@ -393,7 +440,24 @@ final class SessionManager {
             startReaderThread(sessionId: info.id, reader: reader)
         }
 
+        // Prune worktrees not owned by any restored session
+        pruneStaleWorktrees()
+
         notifySessionsChanged()
+    }
+
+    /// Remove leftover worktree directories that aren't tied to any active session.
+    private func pruneStaleWorktrees() {
+        lock.lock()
+        let activePaths = Set(sessions.values.compactMap { s -> String? in
+            guard s.info.branchName != nil else { return nil }
+            return s.info.worktreePath
+        })
+        lock.unlock()
+
+        DispatchQueue.global(qos: .utility).async {
+            WorktreeManager.pruneStaleWorktrees(activeWorktreePaths: activePaths)
+        }
     }
 
     private var autoSaveTimer: DispatchSourceTimer?
@@ -482,6 +546,10 @@ final class SessionManager {
                 guard let text = String(data: validData, encoding: .utf8) else { continue }
                 let now = nowMs()
 
+                // Parse OSC title sequences from raw output before stripping ANSI.
+                // This captures Claude's conversation UUID for all sessions (not just the visible one).
+                self.parseOSCTitle(from: text, sessionId: sessionId)
+
                 var stateChanged = false
 
                 self.lock.lock()
@@ -534,6 +602,13 @@ final class SessionManager {
                     if oldState != session.info.state {
                         session.info.stateChangedAt = now
                         stateChanged = true
+
+                        if session.info.state == .blocked
+                            && UserDefaults.standard.bool(forKey: "enableNotificationSounds") {
+                            DispatchQueue.main.async {
+                                NSSound.beep()
+                            }
+                        }
                     }
 
                     // Parse Claude session ID

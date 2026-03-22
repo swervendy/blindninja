@@ -27,6 +27,7 @@ final class DrawerViewController: NSViewController, TerminalViewDelegate {
     private(set) var expanded = false
     private let collapsedHeight: CGFloat = 28
     private let defaultExpandedHeight: CGFloat = 200
+    private var lastExpandedHeight: CGFloat = 200
 
     override func loadView() {
         view = NSView()
@@ -149,6 +150,11 @@ final class DrawerViewController: NSViewController, TerminalViewDelegate {
         }
     }
 
+    func startRenameActiveTab() {
+        guard let index = activeTabIndex, index < tabBar.arrangedSubviews.count else { return }
+        (tabBar.arrangedSubviews[index] as? DrawerTab)?.startRename()
+    }
+
     func addSession(_ sessionId: String) {
         if tabs.contains(sessionId) { return }
         tabs.append(sessionId)
@@ -158,8 +164,11 @@ final class DrawerViewController: NSViewController, TerminalViewDelegate {
     }
 
     func toggle() {
+        if expanded {
+            lastExpandedHeight = heightConstraint.constant
+        }
         expanded.toggle()
-        heightConstraint.constant = expanded ? defaultExpandedHeight : collapsedHeight
+        heightConstraint.constant = expanded ? lastExpandedHeight : collapsedHeight
         contentContainer.isHidden = !expanded
 
         if expanded && tabs.isEmpty {
@@ -315,6 +324,15 @@ final class DrawerViewController: NSViewController, TerminalViewDelegate {
 
     private func selectTab(at index: Int) {
         guard index >= 0, index < tabs.count else { return }
+
+        // If already active (and not showing env), just ensure focus — don't rebuild
+        if index == activeTabIndex && !isEnvShowing {
+            if let termView = activeContentView {
+                view.window?.makeFirstResponder(termView)
+            }
+            return
+        }
+
         activeContentView?.removeFromSuperview()
         activeContentView = nil
         activeTabIndex = index
@@ -578,8 +596,10 @@ private final class DrawerTab: NSView, NSTextFieldDelegate {
             field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             field.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24),
             field.centerYAnchor.constraint(equalTo: centerYAnchor),
+            field.widthAnchor.constraint(greaterThanOrEqualToConstant: 80),
         ])
-        label.isHidden = true
+        // Keep label's space so the tab doesn't collapse, just hide the text
+        label.alphaValue = 0
         renameField = field
         window?.makeFirstResponder(field)
     }
@@ -597,7 +617,7 @@ private final class DrawerTab: NSView, NSTextFieldDelegate {
         guard !isEndingRename else { return true }
         isEndingRename = true
         let newName = fieldEditor.string.trimmingCharacters(in: .whitespaces)
-        label.isHidden = false
+        label.alphaValue = 1
         renameField?.removeFromSuperview()
         renameField = nil
         if !newName.isEmpty {

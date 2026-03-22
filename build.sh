@@ -6,7 +6,7 @@ BUNDLE_ID="com.blindninja.app"
 EXECUTABLE="BlindNinja"
 BUILD_DIR=".build/release"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
-ICON_SRC="../claude-inbox-app/src-tauri/icons/icon.icns"
+ICON_SRC="Sources/BlindNinja/Resources/AppIcon.icns"
 
 echo "Cleaning build cache..."
 rm -rf .build/arm64-apple-macosx .build/release
@@ -22,12 +22,16 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 # Copy binary
 cp "$BUILD_DIR/$EXECUTABLE" "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE"
 
-# Copy icon
+# Copy icons
 if [ -f "$ICON_SRC" ]; then
     cp "$ICON_SRC" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
     echo "Icon copied."
 else
     echo "Warning: icon not found at $ICON_SRC"
+fi
+PNG_SRC="Sources/BlindNinja/Resources/AppIcon.png"
+if [ -f "$PNG_SRC" ]; then
+    cp "$PNG_SRC" "$APP_BUNDLE/Contents/Resources/AppIcon.png"
 fi
 
 # Create Info.plist
