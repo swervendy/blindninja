@@ -29,8 +29,7 @@ final class StateDotView: NSView {
         let color: NSColor
         switch state {
         case .waiting:
-            color = theme.waitingColor
-            addGlow(color: color)
+            color = theme.idleColor
         case .blocked:
             color = theme.blockedColor
             addGlow(color: color)

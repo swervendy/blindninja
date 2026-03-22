@@ -227,7 +227,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func newDeploySession() {
         _ = try? SessionManager.shared.createSession(
             name: "Deploy",
-            command: "claude --dangerously-skip-permissions"
+            command: SessionManager.deployCommand
         )
         activeSplitVC?.selectLastSession()
     }

@@ -11,15 +11,18 @@ final class SessionRowView: NSView {
 
     let session: SessionInfo
     private let isActive: Bool
+    private let isMultiSelected: Bool
     private let theme: AppTheme
     private let nameField: NSTextField
     private let dotView: StateDotView
     private var renameField: NSTextField?
+    private var nameStackView: NSStackView?
     private var isEndingRename = false
 
-    init(session: SessionInfo, isActive: Bool, theme: AppTheme) {
+    init(session: SessionInfo, isActive: Bool, theme: AppTheme, isMultiSelected: Bool = false) {
         self.session = session
         self.isActive = isActive
+        self.isMultiSelected = isMultiSelected
         self.theme = theme
         self.nameField = NSTextField(labelWithString: "")
         self.dotView = StateDotView(state: session.state, theme: theme)
@@ -37,6 +40,10 @@ final class SessionRowView: NSView {
             layer?.backgroundColor = theme.selectedBackground.cgColor
             layer?.borderWidth = 0.5
             layer?.borderColor = theme.borderColor.withAlphaComponent(0.6).cgColor
+        } else if isMultiSelected {
+            layer?.backgroundColor = theme.selectedBackground.withAlphaComponent(0.5).cgColor
+            layer?.borderWidth = 0.5
+            layer?.borderColor = theme.waitingColor.withAlphaComponent(0.4).cgColor
         }
 
         // State dot
@@ -54,7 +61,31 @@ final class SessionRowView: NSView {
         nameField.lineBreakMode = .byTruncatingTail
         nameField.maximumNumberOfLines = 1
         nameField.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(nameField)
+
+        // Branch label (shown when worktree branch differs from display name)
+        var branchLabel: NSTextField? = nil
+        if let branch = session.branchName, branch != displayName {
+            let bl = NSTextField(labelWithString: branch)
+            bl.font = .systemFont(ofSize: 9, weight: .regular)
+            bl.textColor = theme.sidebarTextSecondary.withAlphaComponent(0.5)
+            bl.lineBreakMode = .byTruncatingTail
+            bl.maximumNumberOfLines = 1
+            bl.translatesAutoresizingMaskIntoConstraints = false
+            branchLabel = bl
+        }
+
+        // Stack name + optional branch vertically
+        if let bl = branchLabel {
+            let nameStack = NSStackView(views: [nameField, bl])
+            nameStack.orientation = .vertical
+            nameStack.alignment = .leading
+            nameStack.spacing = -1
+            nameStack.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(nameStack)
+            nameStackView = nameStack
+        } else {
+            addSubview(nameField)
+        }
 
         // Time ago label
         let timeAgo = formatTimeAgo(session.lastActivity)
@@ -87,15 +118,16 @@ final class SessionRowView: NSView {
 
         nameField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
+        let nameAnchorView: NSView = nameStackView ?? nameField
         NSLayoutConstraint.activate([
             dotView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             dotView.centerYAnchor.constraint(equalTo: centerYAnchor),
             dotView.widthAnchor.constraint(equalToConstant: 6),
             dotView.heightAnchor.constraint(equalToConstant: 6),
 
-            nameField.leadingAnchor.constraint(equalTo: dotView.trailingAnchor, constant: 10),
-            nameField.centerYAnchor.constraint(equalTo: centerYAnchor),
-            nameField.trailingAnchor.constraint(lessThanOrEqualTo: nameTrailingAnchor, constant: nameTrailingConstant),
+            nameAnchorView.leadingAnchor.constraint(equalTo: dotView.trailingAnchor, constant: 10),
+            nameAnchorView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            nameAnchorView.trailingAnchor.constraint(lessThanOrEqualTo: nameTrailingAnchor, constant: nameTrailingConstant),
 
             timeLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
             timeLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -142,15 +174,25 @@ final class SessionRowView: NSView {
     }
 
     override func mouseExited(with event: NSEvent) {
-        layer?.backgroundColor = isActive ? theme.selectedBackground.cgColor : NSColor.clear.cgColor
+        if isActive {
+            layer?.backgroundColor = theme.selectedBackground.cgColor
+        } else if isMultiSelected {
+            layer?.backgroundColor = theme.selectedBackground.withAlphaComponent(0.5).cgColor
+        } else {
+            layer?.backgroundColor = NSColor.clear.cgColor
+        }
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
-        menu.addItem(withTitle: "Rename", action: #selector(ctxRename), keyEquivalent: "")
-        menu.addItem(withTitle: session.starred ? "Unstar" : "Star", action: #selector(ctxStar), keyEquivalent: "")
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "Kill", action: #selector(ctxKill), keyEquivalent: "")
+        if isMultiSelected {
+            menu.addItem(withTitle: "Kill Selected", action: #selector(ctxKill), keyEquivalent: "")
+        } else {
+            menu.addItem(withTitle: "Rename", action: #selector(ctxRename), keyEquivalent: "")
+            menu.addItem(withTitle: session.starred ? "Unstar" : "Star", action: #selector(ctxStar), keyEquivalent: "")
+            menu.addItem(.separator())
+            menu.addItem(withTitle: "Kill", action: #selector(ctxKill), keyEquivalent: "")
+        }
         for item in menu.items { item.target = self }
         return menu
     }

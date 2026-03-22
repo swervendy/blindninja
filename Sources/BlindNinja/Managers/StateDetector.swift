@@ -48,7 +48,6 @@ final class StateDetector {
             "review and",
             "before proceeding",
             "to continue",
-            "accept edits",
             "Do you want to overwrite",
         ]
 
@@ -122,7 +121,7 @@ final class StateDetector {
             return .idle // non-Claude shell is always idle
         }
 
-        let lastLines = lastNLines(stripped, n: 5)
+        let lastLines = lastNLines(stripped, n: 15)
         let lastRange = NSRange(lastLines.startIndex..., in: lastLines)
 
         // Check blocked patterns (approval prompts)

@@ -24,6 +24,8 @@ final class SidebarViewController: NSViewController {
     private var footerContainer: NSView?
     private var shortcutsGuide: NSView?
     private var isRenaming = false
+    private var worktreeToggle: NSSwitch?
+    private var selectedSessionIds: Set<String> = []
 
     override func loadView() {
         view = NSView()
@@ -150,7 +152,20 @@ final class SidebarViewController: NSViewController {
     @objc private func tableViewClick(_ sender: Any) {
         let row = tableView.clickedRow
         guard row >= 0, case .session(let s) = rows[row] else { return }
-        onSessionSelected?(s.id)
+
+        let shiftHeld = NSEvent.modifierFlags.contains(.shift)
+        if shiftHeld {
+            if selectedSessionIds.contains(s.id) {
+                selectedSessionIds.remove(s.id)
+            } else {
+                selectedSessionIds.insert(s.id)
+            }
+            tableView.reloadData()
+        } else {
+            selectedSessionIds.removeAll()
+            tableView.reloadData()
+            onSessionSelected?(s.id)
+        }
     }
 
     @objc private func tableViewDoubleClick(_ sender: Any) {
@@ -211,7 +226,7 @@ final class SidebarViewController: NSViewController {
         let deployBtn = makePillButton(
             label: "Deploy", shortcut: "\u{2318}D"
         ) { [weak self] in
-            _ = try? SessionManager.shared.createSession(name: "Deploy", command: "claude --dangerously-skip-permissions")
+            _ = try? SessionManager.shared.createSession(name: "Deploy", command: SessionManager.deployCommand)
             self?.forceRefreshSessions()
             if let last = SessionManager.shared.listSessions().last { self?.onSessionSelected?(last.id) }
         }
@@ -434,10 +449,26 @@ final class SidebarViewController: NSViewController {
         shortcutsBtn.contentTintColor = currentTheme.sidebarTextSecondary.withAlphaComponent(0.4)
         shortcutsBtn.translatesAutoresizingMaskIntoConstraints = false
 
+        // Worktree toggle
+        let wtLabel = NSTextField(labelWithString: "WORKTREE")
+        wtLabel.font = .systemFont(ofSize: 9, weight: .semibold)
+        wtLabel.textColor = currentTheme.sidebarTextSecondary.withAlphaComponent(0.4)
+        wtLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let wtSwitch = NSSwitch()
+        wtSwitch.controlSize = .mini
+        wtSwitch.state = UserDefaults.standard.bool(forKey: "enableWorktree") ? .on : .off
+        wtSwitch.target = self
+        wtSwitch.action = #selector(worktreeToggleChanged(_:))
+        wtSwitch.translatesAutoresizingMaskIntoConstraints = false
+        worktreeToggle = wtSwitch
+
         container.addSubview(divider)
         container.addSubview(label)
         container.addSubview(shortcutsBtn)
         container.addSubview(popup)
+        container.addSubview(wtLabel)
+        container.addSubview(wtSwitch)
 
         NSLayoutConstraint.activate([
             divider.topAnchor.constraint(equalTo: container.topAnchor),
@@ -454,10 +485,20 @@ final class SidebarViewController: NSViewController {
             popup.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 6),
             popup.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
             popup.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
-            popup.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -14),
+
+            wtLabel.topAnchor.constraint(equalTo: popup.bottomAnchor, constant: 12),
+            wtLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+
+            wtSwitch.centerYAnchor.constraint(equalTo: wtLabel.centerYAnchor),
+            wtSwitch.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            wtSwitch.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -14),
         ])
 
         return container
+    }
+
+    @objc private func worktreeToggleChanged(_ sender: NSSwitch) {
+        UserDefaults.standard.set(sender.state == .on, forKey: "enableWorktree")
     }
 
     @objc private func themeDropdownChanged(_ sender: NSPopUpButton) {
@@ -490,7 +531,12 @@ extension SidebarViewController: NSTableViewDataSource, NSTableViewDelegate {
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         switch rows[row] {
         case .sectionHeader: return 24
-        case .session: return 34
+        case .session(let s):
+            let displayName = s.customName ?? s.aiName ?? s.name
+            if let branch = s.branchName, branch != displayName {
+                return 44
+            }
+            return 34
         }
     }
 
@@ -509,9 +555,25 @@ extension SidebarViewController: NSTableViewDataSource, NSTableViewDelegate {
             ])
             return container
         case .session(let s):
-            let rv = SessionRowView(session: s, isActive: s.id == activeSessionId, theme: currentTheme)
+            let rv = SessionRowView(
+                session: s,
+                isActive: s.id == activeSessionId,
+                theme: currentTheme,
+                isMultiSelected: selectedSessionIds.contains(s.id)
+            )
             rv.onSelect = { [weak self] in self?.onSessionSelected?(s.id) }
-            rv.onKill = { [weak self] in self?.onSessionKill?(s.id) }
+            rv.onKill = { [weak self] in
+                guard let self = self else { return }
+                if !self.selectedSessionIds.isEmpty {
+                    // Kill all selected sessions
+                    for id in self.selectedSessionIds {
+                        self.onSessionKill?(id)
+                    }
+                    self.selectedSessionIds.removeAll()
+                } else {
+                    self.onSessionKill?(s.id)
+                }
+            }
             rv.onRename = { [weak self] n in
                 self?.isRenaming = false
                 SessionManager.shared.renameSession(s.id, name: n)

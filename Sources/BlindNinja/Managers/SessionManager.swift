@@ -11,6 +11,20 @@ extension Notification.Name {
 final class SessionManager {
     static let shared = SessionManager()
 
+    /// Deploy agent command — uses allowedTools to grant full bash and tool access
+    static let deployCommand = "claude" +
+        " --allowedTools" +
+        " 'Bash(*)'" +
+        " Read Grep Glob Edit Write WebFetch WebSearch 'mcp__*'" +
+        #" --system-prompt "You are a deployment agent. Follow this workflow:"# +
+        #" 1) WORKTREES: Check all local worktrees for uncommitted changes by running: for wt in $(git worktree list --porcelain | grep '^worktree ' | awk '{print $2}'); do s=$(git -C \"$wt\" status --short 2>/dev/null | grep -v node_modules | grep -v '.package-lock'); if [ -n \"$s\" ]; then echo \"Worktree $wt:\"; echo \"$s\"; fi; done. Review any uncommitted changes — look at the diffs to understand what each change does, then commit and merge them into the main branch."# +
+        #" 2) BUILD: Run npm run build. If it fails, fix the issues and rebuild until it passes."# +
+        #" 3) PUSH: git add, commit, and push changes to the remote."# +
+        #" 4) CI: Check GitHub Actions status with 'gh run list --limit 5' and 'gh run view <id>'. If any checks fail, read the logs with 'gh run view <id> --log-failed', fix the issues, push again, and re-check. Iterate until CI passes."# +
+        #" 5) DEPLOY: Verify deploy status using any available Render MCP tools. If the deploy fails, check the logs, fix issues, and redeploy. Iterate until the deploy succeeds."# +
+        #" 6) SUMMARY: When everything is green, print a deployment summary with: the branch/commit deployed, a bullet list of features and changes included (derived from commit messages and diffs), CI status, and deploy status. Keep it concise."# +
+        #" Be concise throughout. Focus on getting the deploy done end-to-end.""#
+
     private let maxOutputBuffer = 50 * 1024 // 50KB
 
     private var sessions: [String: SessionInner] = [:]
@@ -100,7 +114,28 @@ final class SessionManager {
     ) throws -> SessionInfo {
         let sessionId = UUID().uuidString.lowercased()
         let now = nowMs()
-        let effectiveCwd = cwd ?? projectRoot
+        let baseCwd = cwd ?? projectRoot
+
+        let isClaudeCmd = command?.hasPrefix("claude") ?? false
+        let isDeploy = name == "Deploy"
+        let sessionType: SessionType = isDeploy ? .deploy : (isClaudeCmd ? .claude : .shell)
+        let useWorktree = UserDefaults.standard.bool(forKey: "enableWorktree") && isClaudeCmd && !isDeploy
+
+        var effectiveCwd = baseCwd
+        var wtPath: String? = nil
+        var wtBranch: String? = nil
+
+        if useWorktree {
+            do {
+                let result = try WorktreeManager.createWorktree(repoPath: baseCwd)
+                effectiveCwd = result.path
+                wtPath = result.path
+                wtBranch = result.branch
+            } catch {
+                // Fall back to normal cwd if worktree creation fails
+                print("Worktree creation failed: \(error). Using normal cwd.")
+            }
+        }
 
         let pty = try PTYHandle.spawn(
             command: command,
@@ -109,9 +144,6 @@ final class SessionManager {
             rows: rows
         )
 
-        let isClaudeCmd = command?.hasPrefix("claude") ?? false
-        let isDeploy = name == "Deploy"
-        let sessionType: SessionType = isDeploy ? .deploy : (isClaudeCmd ? .claude : .shell)
         let displayName = name ?? (isClaudeCmd ? "Session \(sessionId.prefix(8))" : "Shell")
 
         let info = SessionInfo(
@@ -126,8 +158,8 @@ final class SessionManager {
             claudeResumeCmd: nil,
             hasUnread: false,
             stateChangedAt: now,
-            worktreePath: effectiveCwd,
-            branchName: nil,
+            worktreePath: wtPath ?? effectiveCwd,
+            branchName: wtBranch,
             pid: pty.pid,
             claudeActive: isClaudeCmd,
             createdAt: now,
@@ -155,6 +187,13 @@ final class SessionManager {
         lock.lock()
         let session = sessions.removeValue(forKey: sessionId)
         lock.unlock()
+
+        // Clean up worktree if one was created for this session
+        if let info = session?.info, let wtPath = info.worktreePath, info.branchName != nil {
+            DispatchQueue.global(qos: .utility).async { [projectRoot] in
+                WorktreeManager.removeWorktree(repoPath: projectRoot, worktreePath: wtPath)
+            }
+        }
 
         session?.pty?.kill()
 
@@ -319,7 +358,7 @@ final class SessionManager {
                     command = "claude"
                 }
             } else if info.sessionType == .deploy {
-                command = "claude --dangerously-skip-permissions"
+                command = Self.deployCommand
             } else {
                 command = nil
             }
