@@ -291,18 +291,59 @@ final class SessionManager {
     func parseTerminalTitle(_ sessionId: String, title: String) {
         lock.lock()
         guard let session = sessions[sessionId],
-              session.info.claudeSessionId == nil,
               session.info.sessionType == .claude || session.info.sessionType == .deploy else {
             lock.unlock()
             return
         }
-        let range = NSRange(title.startIndex..., in: title)
-        if let match = Self.uuidPattern.firstMatch(in: title, range: range),
-           let idRange = Range(match.range(at: 1), in: title) {
-            let claudeId = String(title[idRange])
-            session.info.claudeSessionId = claudeId
-            session.info.claudeResumeCmd = "claude --resume \(claudeId)"
+
+        // Extract UUID if not yet captured
+        if session.info.claudeSessionId == nil {
+            let range = NSRange(title.startIndex..., in: title)
+            if let match = Self.uuidPattern.firstMatch(in: title, range: range),
+               let idRange = Range(match.range(at: 1), in: title) {
+                let claudeId = String(title[idRange])
+                session.info.claudeSessionId = claudeId
+                session.info.claudeResumeCmd = "claude --resume \(claudeId)"
+            }
         }
+
+        // Extract session name from title set by Claude Code's /rename.
+        // Format is typically: "session-name — Claude Code" or just "session-name"
+        // Skip generic titles like "Claude Code" or bare UUIDs.
+        let cleaned = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else {
+            lock.unlock()
+            return
+        }
+
+        // Strip " — Claude Code" or " - Claude Code" suffix if present
+        var name = cleaned
+        for suffix in [" — Claude Code", " - Claude Code", " \u{2014} Claude Code"] {
+            if name.hasSuffix(suffix) {
+                name = String(name.dropLast(suffix.count))
+                break
+            }
+        }
+        name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Skip if it's just "Claude Code", empty, or a bare UUID
+        let isGeneric = name.isEmpty
+            || name == "Claude Code"
+            || name == "claude"
+            || Self.uuidPattern.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) != nil
+                && name.count < 40
+
+        if !isGeneric && session.info.customName == nil {
+            let changed = session.info.aiName != name
+            session.info.aiName = name
+            session.info.name = name
+            if changed {
+                lock.unlock()
+                notifySessionsChanged()
+                return
+            }
+        }
+
         lock.unlock()
     }
 
