@@ -8,6 +8,9 @@ final class StateDetector {
     private let claudeActivePatterns: [NSRegularExpression]
     private let claudeBlockedPatterns: [NSRegularExpression]
     private let claudePromptPatterns: [NSRegularExpression]
+    /// Patterns that indicate Claude is actively processing (thinking, using tools, etc.)
+    /// Distinguished from prompt patterns — these mean "Claude is doing work right now".
+    private let claudeWorkingIndicators: [NSRegularExpression]
     private let claudeExitPatterns: [NSRegularExpression]
     private let sessionIdPattern: NSRegularExpression
 
@@ -51,11 +54,34 @@ final class StateDetector {
             "Do you want to overwrite",
         ]
 
-        // Claude is at a prompt (waiting for user input)
+        // Claude is at a prompt (waiting for user input).
+        // Includes broad patterns that match even when the user has typed text after the prompt char.
         let promptStrings = [
-            "❯\\s*$",
-            "\u{203A}\\s*$",   // › (single right-pointing angle quotation mark)
+            "❯\\s*$",              // empty ❯ prompt
+            "\u{203A}\\s*$",       // empty › prompt
+            "^\\s*❯",              // ❯ at start of line (matches with typed text too)
+            "^\\s*\u{203A}",       // › at start of line
             "\\? for shortcuts",
+        ]
+
+        // Indicators that Claude is actively working (thinking, tool use, etc.).
+        // When these are visible on screen, "working" takes priority over prompt detection.
+        let workingIndicatorStrings = [
+            "\\(thinking\\)",
+            "\\(tool\\)",
+            "\\(read\\)",
+            "\\(write\\)",
+            "\\(edit\\)",
+            "\\(search\\)",
+            "\\(bash\\)",
+            "Streaming\\.\\.\\.",
+            // Claude Code status line: spinner + verb + ellipsis (e.g. "✱ Roosting…", "⠋ Running…")
+            "Running\u{2026}",           // Running…
+            "Running\\.\\.\\.",          // Running...
+            "\\u{2731}\\s+\\w+\u{2026}", // ✱ Verb…
+            "\\d+m\\s+\\d+s\\s+.*tokens", // time + token count in status line
+            "thought for \\d+",          // "thought for 4s" in status line
+            "\\u{2502}\\s+Running",      // │ Running (tool execution indicator)
         ]
 
         // Claude has exited back to shell
@@ -71,8 +97,9 @@ final class StateDetector {
 
         claudeActivePatterns = compile(activeStrings)
         claudeBlockedPatterns = compile(blockedStrings)
-        // Use anchorsMatchLines so $ matches end of each line, not just end of string
+        // Use anchorsMatchLines so $ and ^ match each line, not just start/end of string
         claudePromptPatterns = compile(promptStrings, options: .anchorsMatchLines)
+        claudeWorkingIndicators = compile(workingIndicatorStrings)
         claudeExitPatterns = compile(exitStrings, options: .anchorsMatchLines)
         sessionIdPattern = try! NSRegularExpression(
             pattern: "(?:resume|session|conversation)[:\\s_-]*([0-9a-f-]{36})",
@@ -121,24 +148,44 @@ final class StateDetector {
             return .idle // non-Claude shell is always idle
         }
 
-        let lastLines = lastNLines(stripped, n: 15)
+        // Use last 40 lines for broad checks
+        let lastLines = lastNLines(stripped, n: 40)
         let lastRange = NSRange(lastLines.startIndex..., in: lastLines)
 
-        // Check blocked patterns (approval prompts)
+        // 1. Check blocked patterns (approval prompts) — highest priority
         for pattern in claudeBlockedPatterns {
             if pattern.firstMatch(in: lastLines, range: lastRange) != nil {
                 return .blocked
             }
         }
 
-        // Check prompt patterns (waiting for user input)
+        // 2. Check for active working indicators (thinking, tool use, etc.) in the
+        //    bottom portion of the screen. These explicitly mean Claude is processing.
+        let recentLines = lastNLines(stripped, n: 12)
+        let recentRange = NSRange(recentLines.startIndex..., in: recentLines)
+        let hasWorkingIndicators = claudeWorkingIndicators.contains { pattern in
+            pattern.firstMatch(in: recentLines, range: recentRange) != nil
+        }
+
+        if hasWorkingIndicators {
+            return .working
+        }
+
+        // 3. Check prompt patterns (waiting for user input).
+        //    This comes BEFORE the time-based "working" check because typing at the
+        //    prompt generates keystroke echo output — we don't want that to show as "working".
+        let promptLines = lastNLines(stripped, n: 5)
+        let promptRange = NSRange(promptLines.startIndex..., in: promptLines)
         for pattern in claudePromptPatterns {
-            if pattern.firstMatch(in: lastLines, range: lastRange) != nil {
+            if pattern.firstMatch(in: promptLines, range: promptRange) != nil {
                 return .waiting
             }
         }
 
-        // Time-based: working if recent output, idle if stale
+        // 4. Time-based: working if recent output, idle if stale
+        if msSinceOutput < 2000 {
+            return .working
+        }
         if msSinceOutput < idleThresholdMs {
             return .working
         }

@@ -12,19 +12,55 @@ extension Notification.Name {
 final class SessionManager {
     static let shared = SessionManager()
 
-    /// Deploy agent command — uses allowedTools to grant full bash and tool access
-    static let deployCommand = "claude" +
-        " --allowedTools" +
-        " 'Bash(*)'" +
-        " Read Grep Glob Edit Write WebFetch WebSearch 'mcp__*'" +
-        #" --system-prompt "You are a deployment agent. Follow this workflow:"# +
-        #" 1) WORKTREES: Check all local worktrees for uncommitted changes by running: for wt in $(git worktree list --porcelain | grep '^worktree ' | awk '{print $2}'); do s=$(git -C \"$wt\" status --short 2>/dev/null | grep -v node_modules | grep -v '.package-lock'); if [ -n \"$s\" ]; then echo \"Worktree $wt:\"; echo \"$s\"; fi; done. Review any uncommitted changes — look at the diffs to understand what each change does, then commit and merge them into the main branch."# +
-        #" 2) BUILD: Run npm run build. If it fails, fix the issues and rebuild until it passes."# +
-        #" 3) PUSH: git add, commit, and push changes to the remote."# +
-        #" 4) CI: Check GitHub Actions status with 'gh run list --limit 5' and 'gh run view <id>'. If any checks fail, read the logs with 'gh run view <id> --log-failed', fix the issues, push again, and re-check. Iterate until CI passes."# +
-        #" 5) DEPLOY: Verify deploy status using any available Render MCP tools. If the deploy fails, check the logs, fix issues, and redeploy. Iterate until the deploy succeeds."# +
-        #" 6) SUMMARY: When everything is green, print a deployment summary with: the branch/commit deployed, a bullet list of features and changes included (derived from commit messages and diffs), CI status, and deploy status. Keep it concise."# +
-        #" Be concise throughout. Focus on getting the deploy done end-to-end.""#
+    /// Build the deploy agent command with dynamic context about active sessions and project root
+    func buildDeployCommand() -> String {
+        let activeSessions = listSessions()
+        lock.lock()
+        let root = projectRoot
+        lock.unlock()
+
+        let worktreeLines = activeSessions
+            .filter { $0.sessionType == .claude && $0.worktreePath != nil && $0.branchName != nil }
+            .map { session -> String in
+                let name = session.customName ?? session.aiName ?? session.name
+                let branch = session.branchName ?? "main"
+                let path = session.worktreePath ?? root
+                return "\(name): branch=\(branch) path=\(path)"
+            }
+
+        var prompt = "You are a deployment agent. Project root: \(root)."
+
+        if !worktreeLines.isEmpty {
+            prompt += " Active Claude sessions with worktrees: " + worktreeLines.joined(separator: "; ") + "."
+        }
+
+        prompt += " Follow this workflow:"
+        prompt += " 1) WORKTREES: Check for uncommitted changes."
+        if !worktreeLines.isEmpty {
+            prompt += " Start with the active session worktrees listed above — those have in-progress work from other Claude sessions."
+        }
+        prompt += " Also check the main repo at the project root."
+        prompt += " For each location with changes, review the diffs to understand what was changed, then commit and merge into the main branch."
+        prompt += " 2) BUILD: Run the project build command (e.g. npm run build). If it fails, fix the issues and rebuild until it passes."
+        prompt += " 3) PUSH: git add, commit, and push changes to the remote."
+        prompt += " 4) CI: Check GitHub Actions status with 'gh run list --limit 5' and 'gh run view <id>'. If any checks fail, read the logs with 'gh run view <id> --log-failed', fix the issues, push again, and re-check. Iterate until CI passes."
+        prompt += " 5) DEPLOY: Verify deploy status using any available Render MCP tools. If the deploy fails, check the logs, fix issues, and redeploy. Iterate until the deploy succeeds."
+        prompt += " 6) SUMMARY: When everything is green, print a deployment summary with: the branch/commit deployed, a bullet list of features and changes included (derived from commit messages and diffs), CI status, and deploy status. Keep it concise."
+        prompt += " Be concise throughout. Focus on getting the deploy done end-to-end."
+
+        // Escape for shell double-quote context
+        let escaped = prompt
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "$", with: "\\$")
+            .replacingOccurrences(of: "`", with: "\\`")
+
+        return "claude" +
+            " --allowedTools" +
+            " 'Bash(*)'" +
+            " Read Grep Glob Edit Write WebFetch WebSearch 'mcp__*'" +
+            " --system-prompt \"\(escaped)\""
+    }
 
     private let maxOutputBuffer = 50 * 1024 // 50KB
 
@@ -51,6 +87,8 @@ final class SessionManager {
         var info: SessionInfo
         var outputBuffer: String = ""
         var strippedTail: String = ""
+        /// Screen content from SwiftTerm buffer — more accurate than raw output for TUI apps
+        var cachedScreenText: String = ""
         var pty: PTYHandle?
         var lastOutputTime: UInt64
         var claudeActive: Bool
@@ -72,20 +110,9 @@ final class SessionManager {
     }
 
     func listSessions() -> [SessionInfo] {
+        // State detection now happens in the flush timer (after terminal feed)
+        // and the idle state timer — this method just returns cached state.
         lock.lock()
-        let now = nowMs()
-
-        // Update states based on timing
-        for session in sessions.values {
-            let msSince = now - session.lastOutputTime
-            let newState = StateDetector.shared.detectState(
-                stripped: session.strippedTail,
-                msSinceOutput: msSince,
-                claudeActive: session.claudeActive
-            )
-            session.info.state = newState
-        }
-
         var list = sessions.values
             .filter { !$0.info.archived }
             .map { $0.info }
@@ -103,6 +130,25 @@ final class SessionManager {
         }
 
         return list
+    }
+
+    // MARK: - Lightweight Accessors (avoid triggering state detection)
+
+    /// Get session type without full listSessions() overhead.
+    func getSessionType(_ sessionId: String) -> SessionType? {
+        lock.lock()
+        let type = sessions[sessionId]?.info.sessionType
+        lock.unlock()
+        return type
+    }
+
+    /// Get display name without full listSessions() overhead.
+    func getSessionName(_ sessionId: String) -> String? {
+        lock.lock()
+        let info = sessions[sessionId]?.info
+        lock.unlock()
+        guard let info = info else { return nil }
+        return info.customName ?? info.aiName ?? info.name
     }
 
     @discardableResult
@@ -406,7 +452,7 @@ final class SessionManager {
                     command = "claude"
                 }
             } else if info.sessionType == SessionType.deploy {
-                command = Self.deployCommand
+                command = buildDeployCommand()
             } else {
                 command = nil
             }
@@ -461,6 +507,7 @@ final class SessionManager {
     }
 
     private var autoSaveTimer: DispatchSourceTimer?
+    private var idleStateTimer: DispatchSourceTimer?
 
     func startAutoSave() {
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
@@ -470,6 +517,104 @@ final class SessionManager {
         }
         timer.resume()
         autoSaveTimer = timer
+
+        startIdleStateTimer()
+    }
+
+    /// Periodic timer that updates state for sessions without recent output.
+    /// Handles time-based transitions like working → idle (after 8s with no output).
+    private func startIdleStateTimer() {
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + 2, repeating: 2)
+        timer.setEventHandler { [weak self] in
+            self?.updateIdleStates()
+        }
+        timer.resume()
+        idleStateTimer = timer
+    }
+
+    private func updateIdleStates() {
+        let now = nowMs()
+        var changed = false
+
+        lock.lock()
+        for (_, session) in sessions {
+            let msSince = now - session.lastOutputTime
+            guard msSince >= 2000 else { continue }
+
+            // Use cached screen text (set by flush timer) or fall back to stripped raw output
+            let text = session.cachedScreenText.isEmpty ? session.strippedTail : session.cachedScreenText
+
+            let oldState = session.info.state
+            session.info.state = StateDetector.shared.detectState(
+                stripped: text,
+                msSinceOutput: msSince,
+                claudeActive: session.claudeActive
+            )
+            if oldState != session.info.state {
+                session.info.stateChangedAt = now
+                changed = true
+            }
+        }
+        lock.unlock()
+
+        if changed {
+            notifySessionsChanged()
+        }
+    }
+
+    /// Read the terminal screen buffer and update session state.
+    /// Called from the flush timer after feeding data to the terminal view.
+    /// Must run on main thread (terminal views are main-thread only).
+    @discardableResult
+    private func updateScreenState(sessionId: String, termView: TerminalView) -> Bool {
+        let terminal = termView.getTerminal()
+        var lines: [String] = []
+        lines.reserveCapacity(terminal.rows)
+        for row in 0..<terminal.rows {
+            if let line = terminal.getLine(row: row) {
+                lines.append(line.translateToString(trimRight: true))
+            }
+        }
+        let screenText = lines.joined(separator: "\n")
+
+        lock.lock()
+        guard let session = sessions[sessionId] else {
+            lock.unlock()
+            return false
+        }
+
+        session.cachedScreenText = screenText
+
+        // Detect claude active from screen (more accurate than raw output for TUI apps)
+        let wasClaude = session.claudeActive
+        session.claudeActive = StateDetector.shared.detectClaudeActive(
+            in: screenText, wasActive: session.claudeActive
+        )
+        session.info.claudeActive = session.claudeActive
+
+        if !wasClaude && session.claudeActive
+            && session.info.customName == nil && session.info.aiName == nil {
+            session.info.name = "Agent \(sessionId.prefix(8))"
+        }
+
+        let msSince = nowMs() - session.lastOutputTime
+        let oldState = session.info.state
+        session.info.state = StateDetector.shared.detectState(
+            stripped: screenText,
+            msSinceOutput: msSince,
+            claudeActive: session.claudeActive
+        )
+        let changed = oldState != session.info.state
+        if changed {
+            session.info.stateChangedAt = nowMs()
+            if session.info.state == .blocked
+                && UserDefaults.standard.bool(forKey: "enableNotificationSounds") {
+                DispatchQueue.main.async { NSSound.beep() }
+            }
+        }
+        lock.unlock()
+        return changed
     }
 
     // MARK: - PTY Reader
@@ -478,7 +623,6 @@ final class SessionManager {
         // Batch state shared between reader and flush timer
         let batchLock = NSLock()
         var batchBuf = Data()
-        var batchStateChanged = false
         var done = false
 
         // Flush timer — fires every 16ms on main queue to push batched output to UI
@@ -486,28 +630,54 @@ final class SessionManager {
         var lastSessionsNotify = DispatchTime.now()
         let sessionsInterval: UInt64 = 500_000_000 // 500ms in nanoseconds
 
+        var lastScreenUpdate = DispatchTime.now()
+        let screenUpdateInterval: UInt64 = 250_000_000 // 250ms — avoid running regex on every frame
+
         flushTimer.setEventHandler { [weak self] in
+            let termView = self?.terminalViews[sessionId]
+
             batchLock.lock()
-            let data = batchBuf
-            batchBuf = Data()
-            let stateChanged = batchStateChanged
-            batchStateChanged = false
+            // Only drain the batch buffer when the TerminalView exists.
+            // TUI apps send critical setup sequences (alternate screen, colors)
+            // early — if we drain before the view is ready, that data is lost
+            // and the terminal shows a blank screen.
+            let data: Data
+            if termView != nil {
+                data = batchBuf
+                batchBuf = Data()
+            } else {
+                data = Data()
+            }
             let isDone = done
             batchLock.unlock()
 
             if !data.isEmpty {
-                // Feed directly to the session's TerminalView
-                if let termView = self?.terminalViews[sessionId] {
+                if let termView = termView {
                     let bytes = [UInt8](data)
                     termView.feed(byteArray: ArraySlice(bytes))
-                }
 
-                // Post notification for sidebar/other UI updates
-                let now = DispatchTime.now()
-                let elapsed = now.uptimeNanoseconds - lastSessionsNotify.uptimeNanoseconds
-                if stateChanged || elapsed >= sessionsInterval {
-                    self?.notifySessionsChanged()
-                    lastSessionsNotify = now
+                    // Throttle screen state detection — reading all terminal rows + regex
+                    // is expensive and doesn't need to run on every 16ms frame.
+                    let now = DispatchTime.now()
+                    let screenElapsed = now.uptimeNanoseconds - lastScreenUpdate.uptimeNanoseconds
+                    if screenElapsed >= screenUpdateInterval {
+                        let stateChanged = self?.updateScreenState(sessionId: sessionId, termView: termView) ?? false
+                        lastScreenUpdate = now
+
+                        let notifyElapsed = now.uptimeNanoseconds - lastSessionsNotify.uptimeNanoseconds
+                        if stateChanged || notifyElapsed >= sessionsInterval {
+                            self?.notifySessionsChanged()
+                            lastSessionsNotify = now
+                        }
+                    }
+                } else {
+                    // No terminal view yet — post periodic notifications so UI stays current
+                    let now = DispatchTime.now()
+                    let elapsed = now.uptimeNanoseconds - lastSessionsNotify.uptimeNanoseconds
+                    if elapsed >= sessionsInterval {
+                        self?.notifySessionsChanged()
+                        lastSessionsNotify = now
+                    }
                 }
             }
 
@@ -550,8 +720,6 @@ final class SessionManager {
                 // This captures Claude's conversation UUID for all sessions (not just the visible one).
                 self.parseOSCTitle(from: text, sessionId: sessionId)
 
-                var stateChanged = false
-
                 self.lock.lock()
                 if let session = self.sessions[sessionId] {
                     // Append to output buffer
@@ -561,72 +729,55 @@ final class SessionManager {
                     session.lastOutputTime = now
                     session.info.lastActivity = now
 
-                    // Strip ANSI from last 4KB for state detection
-                    let tailStart = max(0, session.outputBuffer.count - 4096)
-                    let tailIdx = session.outputBuffer.index(
-                        session.outputBuffer.startIndex,
-                        offsetBy: tailStart
-                    )
-                    let stripped = stripAnsi(String(session.outputBuffer[tailIdx...]))
-                    session.strippedTail = stripped
+                    session.info.hasUnread = true
 
-                    // Update last line — use stripped text (no ANSI)
-                    let lastLineRaw = stripped.split(separator: "\n")
-                        .last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
-                        ?? ""
-                    // Remove any remaining control chars and trim
-                    let cleanLine = String(lastLineRaw)
-                        .filter { !$0.isASCII || $0.asciiValue! >= 32 || $0 == "\t" }
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    session.info.lastLine = String(cleanLine.prefix(120))
+                    // When no terminal view exists, we need ANSI-stripped text for
+                    // state detection and last-line display. Once a view is attached,
+                    // updateScreenState reads directly from the terminal buffer.
+                    let needsFallback = self.terminalViews[sessionId] == nil
+                    if needsFallback {
+                        let tailStart = max(0, session.outputBuffer.count - 16384)
+                        let tailIdx = session.outputBuffer.index(
+                            session.outputBuffer.startIndex,
+                            offsetBy: tailStart
+                        )
+                        let stripped = stripAnsi(String(session.outputBuffer[tailIdx...]))
+                        session.strippedTail = stripped
 
-                    // Detect Claude active
-                    let wasClaude = session.claudeActive
-                    session.claudeActive = StateDetector.shared.detectClaudeActive(
-                        in: stripped, wasActive: session.claudeActive
-                    )
-                    session.info.claudeActive = session.claudeActive
+                        // Update last line
+                        let lastLineRaw = stripped.split(separator: "\n")
+                            .last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
+                            ?? ""
+                        let cleanLine = String(lastLineRaw)
+                            .filter { !$0.isASCII || $0.asciiValue! >= 32 || $0 == "\t" }
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        session.info.lastLine = String(cleanLine.prefix(120))
 
-                    if !wasClaude && session.claudeActive
-                        && session.info.customName == nil && session.info.aiName == nil {
-                        session.info.name = "Agent \(sessionId.prefix(8))"
-                    }
-
-                    // Detect state
-                    let oldState = session.info.state
-                    session.info.state = StateDetector.shared.detectState(
-                        stripped: stripped,
-                        msSinceOutput: 0,
-                        claudeActive: session.claudeActive
-                    )
-                    if oldState != session.info.state {
-                        session.info.stateChangedAt = now
-                        stateChanged = true
-
-                        if session.info.state == .blocked
-                            && UserDefaults.standard.bool(forKey: "enableNotificationSounds") {
-                            DispatchQueue.main.async {
-                                NSSound.beep()
+                        // Parse Claude session ID
+                        if session.info.claudeSessionId == nil {
+                            if let sid = StateDetector.shared.parseClaudeSessionId(from: stripped) {
+                                session.info.claudeSessionId = sid
+                                session.info.claudeResumeCmd = "claude --resume \(sid)"
                             }
                         }
-                    }
 
-                    // Parse Claude session ID
-                    if session.info.claudeSessionId == nil {
-                        if let sid = StateDetector.shared.parseClaudeSessionId(from: stripped) {
-                            session.info.claudeSessionId = sid
-                            session.info.claudeResumeCmd = "claude --resume \(sid)"
-                        }
+                        // Fallback state detection
+                        session.claudeActive = StateDetector.shared.detectClaudeActive(
+                            in: stripped, wasActive: session.claudeActive
+                        )
+                        session.info.claudeActive = session.claudeActive
+                        session.info.state = StateDetector.shared.detectState(
+                            stripped: stripped,
+                            msSinceOutput: 0,
+                            claudeActive: session.claudeActive
+                        )
                     }
-
-                    session.info.hasUnread = true
                 }
                 self.lock.unlock()
 
                 // Append to batch
                 batchLock.lock()
                 batchBuf.append(validData)
-                if stateChanged { batchStateChanged = true }
                 batchLock.unlock()
             }
 
@@ -674,8 +825,9 @@ final class SessionManager {
     }
 
     private static func trimBufferFront(_ buf: inout String, maxLen: Int) {
-        guard buf.utf8.count > maxLen else { return }
-        let excess = buf.utf8.count - maxLen
+        let byteCount = buf.utf8.count
+        guard byteCount > maxLen else { return }
+        let excess = byteCount - maxLen
         var idx = buf.utf8.index(buf.utf8.startIndex, offsetBy: excess)
         // Advance to character boundary
         while idx < buf.endIndex && !buf.utf8.indices.contains(idx) {

@@ -1,72 +1,179 @@
 import AppKit
 
-/// CSS-equivalent state dot — colored circle with optional glow/pulse animation.
+/// State indicator view — renders as dot, ring, or bar depending on settings.
 final class StateDotView: NSView {
     private let state: SessionState
     private let theme: AppTheme
+    private let style: IndicatorStyle
+    private let density: SidebarDensity
 
-    init(state: SessionState, theme: AppTheme) {
+    init(state: SessionState, theme: AppTheme,
+         style: IndicatorStyle = SidebarSettings.indicatorStyle,
+         density: SidebarDensity = SidebarSettings.density) {
         self.state = state
         self.theme = theme
-        super.init(frame: NSRect(x: 0, y: 0, width: 6, height: 6))
+        self.style = style
+        self.density = density
+        super.init(frame: .zero)
         wantsLayer = true
-        setupDot()
+        setup()
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
+    /// Intrinsic size based on style & density.
+    var indicatorSize: NSSize {
+        switch style {
+        case .dot, .ring:
+            let s = density.dotSize
+            return NSSize(width: s, height: s)
+        case .bar:
+            return NSSize(width: density.barWidth, height: 0) // height stretches to row
+        }
+    }
+
+    override var intrinsicContentSize: NSSize { indicatorSize }
+
     override func layout() {
         super.layout()
-        layer?.cornerRadius = bounds.width / 2
+        switch style {
+        case .dot, .ring:
+            layer?.cornerRadius = min(bounds.width, bounds.height) / 2
+        case .bar:
+            layer?.cornerRadius = density.barWidth / 2
+        }
     }
 
-    private func setupDot() {
+    private func setup() {
         guard let layer = layer else { return }
-
-        layer.cornerRadius = 3
         layer.masksToBounds = false
 
-        let color: NSColor
-        switch state {
-        case .waiting:
-            color = theme.idleColor
-        case .blocked:
-            color = theme.blockedColor
-            addGlow(color: color)
-        case .working:
-            color = theme.workingColor
-            addPulse(color: color)
-        case .idle:
-            color = theme.idleColor
-            layer.opacity = 0.5
-        case .new:
-            color = theme.idleColor
-            layer.opacity = 0.3
-        }
+        let color = stateColor()
+        let opacity = stateOpacity()
+        layer.opacity = opacity
 
-        layer.backgroundColor = color.cgColor
+        switch style {
+        case .dot:
+            setupDot(color: color, layer: layer)
+        case .ring:
+            setupRing(color: color, layer: layer)
+        case .bar:
+            setupBar(color: color, layer: layer)
+        }
     }
 
-    /// Soft glow effect (matches CSS box-shadow on waiting/blocked dots)
-    private func addGlow(color: NSColor) {
-        guard let layer = layer else { return }
+    // MARK: - State helpers
+
+    private func stateColor() -> NSColor {
+        switch state {
+        case .waiting:  return theme.idleColor
+        case .blocked:  return theme.blockedColor
+        case .working:  return theme.workingColor
+        case .idle:     return theme.idleColor
+        case .new:      return theme.idleColor
+        }
+    }
+
+    private func stateOpacity() -> Float {
+        switch state {
+        case .idle: return 0.6
+        case .new:  return 0.35
+        default:    return 1.0
+        }
+    }
+
+    // MARK: - Dot style (filled circle with optional glow)
+
+    private func setupDot(color: NSColor, layer: CALayer) {
+        layer.backgroundColor = color.cgColor
+        layer.cornerRadius = density.dotSize / 2
+
+        switch state {
+        case .blocked:
+            addGlow(color: color, layer: layer)
+            addBorder(color: color, opacity: 0.4, layer: layer)
+        case .working:
+            addPulse(color: color, layer: layer)
+            addBorder(color: color, opacity: 0.35, layer: layer)
+        case .waiting:
+            addBorder(color: color, opacity: 0.3, layer: layer)
+        case .idle:
+            addBorder(color: color, opacity: 0.2, layer: layer)
+        case .new:
+            break
+        }
+    }
+
+    // MARK: - Ring style (hollow circle, fill on active states)
+
+    private func setupRing(color: NSColor, layer: CALayer) {
+        layer.cornerRadius = density.dotSize / 2
+
+        switch state {
+        case .working:
+            // Filled ring with glow
+            layer.backgroundColor = color.cgColor
+            layer.borderWidth = 2
+            layer.borderColor = color.withAlphaComponent(0.5).cgColor
+            addPulse(color: color, layer: layer)
+        case .blocked:
+            layer.backgroundColor = color.cgColor
+            layer.borderWidth = 2
+            layer.borderColor = color.withAlphaComponent(0.5).cgColor
+            addGlow(color: color, layer: layer)
+        case .waiting:
+            // Half-filled: ring with dim fill
+            layer.backgroundColor = color.withAlphaComponent(0.25).cgColor
+            layer.borderWidth = 1.5
+            layer.borderColor = color.cgColor
+        case .idle:
+            // Hollow ring
+            layer.backgroundColor = NSColor.clear.cgColor
+            layer.borderWidth = 1.5
+            layer.borderColor = color.cgColor
+        case .new:
+            layer.backgroundColor = NSColor.clear.cgColor
+            layer.borderWidth = 1
+            layer.borderColor = color.withAlphaComponent(0.5).cgColor
+        }
+    }
+
+    // MARK: - Bar style (vertical left-edge bar)
+
+    private func setupBar(color: NSColor, layer: CALayer) {
+        layer.backgroundColor = color.cgColor
+        layer.cornerRadius = density.barWidth / 2
+
+        switch state {
+        case .blocked:
+            addGlow(color: color, layer: layer)
+        case .working:
+            addPulse(color: color, layer: layer)
+        default:
+            break
+        }
+    }
+
+    // MARK: - Effects
+
+    private func addBorder(color: NSColor, opacity: CGFloat, layer: CALayer) {
+        layer.borderWidth = 1.5
+        layer.borderColor = color.withAlphaComponent(opacity).cgColor
+    }
+
+    private func addGlow(color: NSColor, layer: CALayer) {
+        layer.shadowColor = color.cgColor
+        layer.shadowOffset = .zero
+        layer.shadowRadius = 5
+        layer.shadowOpacity = 0.7
+    }
+
+    private func addPulse(color: NSColor, layer: CALayer) {
         layer.shadowColor = color.cgColor
         layer.shadowOffset = .zero
         layer.shadowRadius = 4
-        layer.shadowOpacity = 0.6
-    }
+        layer.shadowOpacity = 0.5
 
-    /// Pulsing animation (matches CSS @keyframes pulse on working dots)
-    private func addPulse(color: NSColor) {
-        guard let layer = layer else { return }
-
-        // Glow base
-        layer.shadowColor = color.cgColor
-        layer.shadowOffset = .zero
-        layer.shadowRadius = 3
-        layer.shadowOpacity = 0.4
-
-        // Opacity pulse: 0.5 -> 1.0 -> 0.5
         let pulse = CABasicAnimation(keyPath: "opacity")
         pulse.fromValue = 0.5
         pulse.toValue = 1.0

@@ -10,8 +10,15 @@ private enum SidebarRow {
 final class SidebarViewController: NSViewController {
     var onSessionSelected: ((String) -> Void)?
     var onSessionKill: ((String) -> Void)?
+    var onSessionsKill: ((Set<String>) -> Void)?
+    var onNewClaudeRequested: (() -> Void)?
+    var onNewDeployRequested: (() -> Void)?
     var onNewShellRequested: (() -> Void)?
     var onThemeChanged: ((AppTheme) -> Void)?
+    /// Optional filter — when set, sessions matching these IDs are excluded from the sidebar.
+    var hiddenSessionIds: Set<String> = []
+    /// When non-empty, only sessions in this set are shown (ownership filter from the parent window).
+    var ownedSessionIds: Set<String> = []
 
     private let scrollView = NSScrollView()
     private let tableView = NSTableView()
@@ -44,10 +51,11 @@ final class SidebarViewController: NSViewController {
         tableView.headerView = nil
         tableView.delegate = self
         tableView.dataSource = self
-        tableView.rowHeight = 34
+        let density = SidebarSettings.density
+        tableView.rowHeight = density.rowHeight
         tableView.selectionHighlightStyle = .none
         tableView.backgroundColor = .clear
-        tableView.intercellSpacing = NSSize(width: 0, height: 1)
+        tableView.intercellSpacing = NSSize(width: 0, height: density.intercellSpacing)
         tableView.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         tableView.action = #selector(tableViewClick(_:))
         tableView.doubleAction = #selector(tableViewDoubleClick(_:))
@@ -89,9 +97,9 @@ final class SidebarViewController: NSViewController {
         applyTheme(currentTheme)
         refreshSessions()
 
-        NotificationCenter.default.addObserver(forName: .sessionsChanged, object: nil, queue: .main) { [weak self] _ in
-            self?.forceRefreshSessions()
-        }
+        // Note: sessionsChanged is handled by SplitViewController which calls
+        // refreshSessions() with throttle + filter updates. No separate observer here
+        // to avoid double-processing and defeating the throttle.
     }
 
     func refreshSessions() {
@@ -104,8 +112,13 @@ final class SidebarViewController: NSViewController {
         guard !isRenaming else { return }
         lastRefresh = Date()
         let all = SessionManager.shared.listSessions()
-        // Filter out shell sessions — they live in the drawer
-        sessions = all.filter { $0.sessionType != .shell }
+        // Filter out shell sessions (they live in the drawer), per-window hidden sessions,
+        // and sessions not owned by this window
+        sessions = all.filter {
+            $0.sessionType != .shell
+            && !hiddenSessionIds.contains($0.id)
+            && (ownedSessionIds.isEmpty || ownedSessionIds.contains($0.id))
+        }
 
         // Build rows with section headers
         let deploySessions = sessions.filter { $0.sessionType == .deploy }
@@ -117,20 +130,74 @@ final class SidebarViewController: NSViewController {
             newRows.append(contentsOf: deploySessions.map { .session($0) })
         }
         if !claudeSessions.isEmpty {
-            if !deploySessions.isEmpty { /* spacing handled by header */ }
             newRows.append(.sectionHeader("SESSIONS"))
             newRows.append(contentsOf: claudeSessions.map { .session($0) })
         }
         if deploySessions.isEmpty && claudeSessions.isEmpty {
             newRows.append(.sectionHeader("SESSIONS"))
         }
-        rows = newRows
-        tableView.reloadData()
+
+        // Differential update: if same structure, only reload visually changed rows.
+        // This preserves StateDotView animations and avoids full table rebuilds.
+        if rows.count == newRows.count && rowStructureMatches(rows, newRows) {
+            var changedRows = IndexSet()
+            for i in 0..<newRows.count {
+                if case .session(let oldS) = rows[i],
+                   case .session(let newS) = newRows[i],
+                   sessionVisuallyDifferent(oldS, newS) {
+                    changedRows.insert(i)
+                }
+            }
+            rows = newRows
+            if !changedRows.isEmpty {
+                tableView.reloadData(forRowIndexes: changedRows, columnIndexes: IndexSet(integer: 0))
+            }
+        } else {
+            rows = newRows
+            tableView.reloadData()
+        }
+    }
+
+    private func rowStructureMatches(_ a: [SidebarRow], _ b: [SidebarRow]) -> Bool {
+        for (ra, rb) in zip(a, b) {
+            switch (ra, rb) {
+            case (.sectionHeader(let ta), .sectionHeader(let tb)):
+                if ta != tb { return false }
+            case (.session(let sa), .session(let sb)):
+                if sa.id != sb.id { return false }
+            default:
+                return false
+            }
+        }
+        return true
+    }
+
+    private func sessionVisuallyDifferent(_ a: SessionInfo, _ b: SessionInfo) -> Bool {
+        a.state != b.state
+        || a.name != b.name
+        || a.customName != b.customName
+        || a.aiName != b.aiName
+        || a.hasUnread != b.hasUnread
+        || a.starred != b.starred
+        || a.branchName != b.branchName
     }
 
     func setActiveSession(_ sessionId: String) {
+        let oldId = activeSessionId
         activeSessionId = sessionId
-        tableView.reloadData()
+
+        // Only reload the old and new active rows instead of the entire table
+        var rowsToReload = IndexSet()
+        for (i, row) in rows.enumerated() {
+            if case .session(let s) = row {
+                if s.id == oldId || s.id == sessionId {
+                    rowsToReload.insert(i)
+                }
+            }
+        }
+        if !rowsToReload.isEmpty {
+            tableView.reloadData(forRowIndexes: rowsToReload, columnIndexes: IndexSet(integer: 0))
+        }
     }
 
     func startRename(sessionId: String) {
@@ -241,16 +308,12 @@ final class SidebarViewController: NSViewController {
         let claudeBtn = makePillButton(
             label: "Claude", shortcut: "\u{2318}T"
         ) { [weak self] in
-            _ = try? SessionManager.shared.createSession(command: "claude")
-            self?.forceRefreshSessions()
-            if let last = SessionManager.shared.listSessions().last { self?.onSessionSelected?(last.id) }
+            self?.onNewClaudeRequested?()
         }
         let deployBtn = makePillButton(
             label: "Deploy", shortcut: "\u{2318}D"
         ) { [weak self] in
-            _ = try? SessionManager.shared.createSession(name: "Deploy", command: SessionManager.deployCommand)
-            self?.forceRefreshSessions()
-            if let last = SessionManager.shared.listSessions().last { self?.onSessionSelected?(last.id) }
+            self?.onNewDeployRequested?()
         }
         let shellBtn = makePillButton(
             label: "Shell", shortcut: "\u{21E7}\u{2318}T"
@@ -415,9 +478,48 @@ final class SidebarViewController: NSViewController {
         popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxX)
     }
 
-    // MARK: - Footer (Theme Picker)
+    // MARK: - Footer (Settings)
 
     private var themePopUp: NSPopUpButton?
+
+    private func makeStyledPopUp(
+        items: [(title: String, value: String)],
+        selectedValue: String,
+        target: AnyObject,
+        action: Selector
+    ) -> NSPopUpButton {
+        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+        popup.removeAllItems()
+        for item in items {
+            popup.addItem(withTitle: item.title)
+            popup.lastItem?.representedObject = item.value
+        }
+        if let idx = items.firstIndex(where: { $0.value == selectedValue }) {
+            popup.selectItem(at: idx)
+        }
+        popup.target = target
+        popup.action = action
+        popup.font = .systemFont(ofSize: 11, weight: .medium)
+        popup.contentTintColor = currentTheme.sidebarText
+        popup.isBordered = false
+        popup.translatesAutoresizingMaskIntoConstraints = false
+        for mi in popup.itemArray {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .foregroundColor: currentTheme.sidebarText,
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium)
+            ]
+            mi.attributedTitle = NSAttributedString(string: mi.title, attributes: attrs)
+        }
+        return popup
+    }
+
+    private func makeFooterLabel(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: 9, weight: .semibold)
+        label.textColor = currentTheme.sidebarTextSecondary.withAlphaComponent(0.4)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        return label
+    }
 
     private func buildFooter() -> NSView {
         let container = NSView()
@@ -430,38 +532,14 @@ final class SidebarViewController: NSViewController {
         divider.translatesAutoresizingMaskIntoConstraints = false
 
         // Theme dropdown
-        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
-        popup.removeAllItems()
-        for theme in AppTheme.all {
-            popup.addItem(withTitle: theme.name)
-            popup.lastItem?.representedObject = theme.id
-        }
-        // Select current
-        if let idx = AppTheme.all.firstIndex(where: { $0.id == currentTheme.id }) {
-            popup.selectItem(at: idx)
-        }
-        popup.target = self
-        popup.action = #selector(themeDropdownChanged(_:))
-        popup.font = .systemFont(ofSize: 11, weight: .medium)
-        popup.contentTintColor = currentTheme.sidebarText
-        popup.isBordered = false
-        popup.translatesAutoresizingMaskIntoConstraints = false
-        themePopUp = popup
-
-        // Style menu item text for dark backgrounds
-        for item in popup.itemArray {
-            let attrs: [NSAttributedString.Key: Any] = [
-                .foregroundColor: currentTheme.sidebarText,
-                .font: NSFont.systemFont(ofSize: 11, weight: .medium)
-            ]
-            item.attributedTitle = NSAttributedString(string: item.title, attributes: attrs)
-        }
-
-        // Label
-        let label = NSTextField(labelWithString: "THEME")
-        label.font = .systemFont(ofSize: 9, weight: .semibold)
-        label.textColor = currentTheme.sidebarTextSecondary.withAlphaComponent(0.4)
-        label.translatesAutoresizingMaskIntoConstraints = false
+        let themeLabel = makeFooterLabel("THEME")
+        let themePopup = makeStyledPopUp(
+            items: AppTheme.all.map { ($0.name, $0.id) },
+            selectedValue: currentTheme.id,
+            target: self,
+            action: #selector(themeDropdownChanged(_:))
+        )
+        themePopUp = themePopup
 
         // Shortcuts button
         let shortcutsBtn = NSButton(title: "Shortcuts", target: self, action: #selector(showShortcutsPopover(_:)))
@@ -471,12 +549,51 @@ final class SidebarViewController: NSViewController {
         shortcutsBtn.contentTintColor = currentTheme.sidebarTextSecondary.withAlphaComponent(0.4)
         shortcutsBtn.translatesAutoresizingMaskIntoConstraints = false
 
-        // Worktree toggle
-        let wtLabel = NSTextField(labelWithString: "WORKTREE MODE")
-        wtLabel.font = .systemFont(ofSize: 9, weight: .semibold)
-        wtLabel.textColor = currentTheme.sidebarTextSecondary.withAlphaComponent(0.4)
-        wtLabel.translatesAutoresizingMaskIntoConstraints = false
+        // Indicator style dropdown
+        let indicatorLabel = makeFooterLabel("INDICATOR")
+        let indicatorPopup = makeStyledPopUp(
+            items: IndicatorStyle.allCases.map { ($0.displayName, $0.rawValue) },
+            selectedValue: SidebarSettings.indicatorStyle.rawValue,
+            target: self,
+            action: #selector(indicatorStyleChanged(_:))
+        )
 
+        // Density dropdown
+        let densityLabel = makeFooterLabel("DENSITY")
+        let densityPopup = makeStyledPopUp(
+            items: SidebarDensity.allCases.map { ($0.displayName, $0.rawValue) },
+            selectedValue: SidebarSettings.density.rawValue,
+            target: self,
+            action: #selector(densityChanged(_:))
+        )
+
+        // Indicator + Density on same row
+        let indDensRow = NSView()
+        indDensRow.translatesAutoresizingMaskIntoConstraints = false
+        indDensRow.addSubview(indicatorLabel)
+        indDensRow.addSubview(indicatorPopup)
+        indDensRow.addSubview(densityLabel)
+        indDensRow.addSubview(densityPopup)
+        NSLayoutConstraint.activate([
+            indicatorLabel.topAnchor.constraint(equalTo: indDensRow.topAnchor),
+            indicatorLabel.leadingAnchor.constraint(equalTo: indDensRow.leadingAnchor, constant: 16),
+
+            indicatorPopup.topAnchor.constraint(equalTo: indicatorLabel.bottomAnchor, constant: 4),
+            indicatorPopup.leadingAnchor.constraint(equalTo: indDensRow.leadingAnchor, constant: 10),
+            indicatorPopup.bottomAnchor.constraint(equalTo: indDensRow.bottomAnchor),
+            indicatorPopup.widthAnchor.constraint(equalTo: indDensRow.widthAnchor, multiplier: 0.5, constant: -12),
+
+            densityLabel.topAnchor.constraint(equalTo: indDensRow.topAnchor),
+            densityLabel.leadingAnchor.constraint(equalTo: indDensRow.centerXAnchor, constant: 6),
+
+            densityPopup.topAnchor.constraint(equalTo: densityLabel.bottomAnchor, constant: 4),
+            densityPopup.leadingAnchor.constraint(equalTo: indDensRow.centerXAnchor),
+            densityPopup.trailingAnchor.constraint(equalTo: indDensRow.trailingAnchor, constant: -10),
+            densityPopup.bottomAnchor.constraint(equalTo: indDensRow.bottomAnchor),
+        ])
+
+        // Worktree toggle
+        let wtLabel = makeFooterLabel("WORKTREE MODE")
         let wtSwitch = NSSwitch()
         wtSwitch.controlSize = .mini
         wtSwitch.state = UserDefaults.standard.bool(forKey: "enableWorktree") ? .on : .off
@@ -486,11 +603,7 @@ final class SidebarViewController: NSViewController {
         worktreeToggle = wtSwitch
 
         // Notification sound toggle
-        let nsLabel = NSTextField(labelWithString: "NOTIFICATION SOUNDS")
-        nsLabel.font = .systemFont(ofSize: 9, weight: .semibold)
-        nsLabel.textColor = currentTheme.sidebarTextSecondary.withAlphaComponent(0.4)
-        nsLabel.translatesAutoresizingMaskIntoConstraints = false
-
+        let nsLabel = makeFooterLabel("NOTIFICATION SOUNDS")
         let nsSwitch = NSSwitch()
         nsSwitch.controlSize = .mini
         nsSwitch.state = UserDefaults.standard.bool(forKey: "enableNotificationSounds") ? .on : .off
@@ -500,9 +613,10 @@ final class SidebarViewController: NSViewController {
         notifSoundToggle = nsSwitch
 
         container.addSubview(divider)
-        container.addSubview(label)
+        container.addSubview(themeLabel)
         container.addSubview(shortcutsBtn)
-        container.addSubview(popup)
+        container.addSubview(themePopup)
+        container.addSubview(indDensRow)
         container.addSubview(wtLabel)
         container.addSubview(wtSwitch)
         container.addSubview(nsLabel)
@@ -514,17 +628,21 @@ final class SidebarViewController: NSViewController {
             divider.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
             divider.heightAnchor.constraint(equalToConstant: 0.5),
 
-            label.topAnchor.constraint(equalTo: divider.bottomAnchor, constant: 14),
-            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+            themeLabel.topAnchor.constraint(equalTo: divider.bottomAnchor, constant: 14),
+            themeLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
 
-            shortcutsBtn.centerYAnchor.constraint(equalTo: label.centerYAnchor),
+            shortcutsBtn.centerYAnchor.constraint(equalTo: themeLabel.centerYAnchor),
             shortcutsBtn.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
 
-            popup.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 6),
-            popup.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
-            popup.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
+            themePopup.topAnchor.constraint(equalTo: themeLabel.bottomAnchor, constant: 6),
+            themePopup.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
+            themePopup.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
 
-            wtLabel.topAnchor.constraint(equalTo: popup.bottomAnchor, constant: 12),
+            indDensRow.topAnchor.constraint(equalTo: themePopup.bottomAnchor, constant: 12),
+            indDensRow.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            indDensRow.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+
+            wtLabel.topAnchor.constraint(equalTo: indDensRow.bottomAnchor, constant: 12),
             wtLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
 
             wtSwitch.centerYAnchor.constraint(equalTo: wtLabel.centerYAnchor),
@@ -555,6 +673,28 @@ final class SidebarViewController: NSViewController {
         onThemeChanged?(theme)
     }
 
+    @objc private func indicatorStyleChanged(_ sender: NSPopUpButton) {
+        guard let raw = sender.selectedItem?.representedObject as? String,
+              let style = IndicatorStyle(rawValue: raw) else { return }
+        SidebarSettings.indicatorStyle = style
+        applySidebarSettings()
+    }
+
+    @objc private func densityChanged(_ sender: NSPopUpButton) {
+        guard let raw = sender.selectedItem?.representedObject as? String,
+              let density = SidebarDensity(rawValue: raw) else { return }
+        SidebarSettings.density = density
+        applySidebarSettings()
+    }
+
+    private func applySidebarSettings() {
+        let density = SidebarSettings.density
+        tableView.rowHeight = density.rowHeight
+        tableView.intercellSpacing = NSSize(width: 0, height: density.intercellSpacing)
+        tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<rows.count))
+        tableView.reloadData()
+    }
+
     private func rebuildFooter() {
         guard let old = footerContainer else { return }
         let new = buildFooter()
@@ -577,14 +717,15 @@ extension SidebarViewController: NSTableViewDataSource, NSTableViewDelegate {
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        let density = SidebarSettings.density
         switch rows[row] {
-        case .sectionHeader: return 24
+        case .sectionHeader: return density.sectionHeaderHeight
         case .session(let s):
             let displayName = s.customName ?? s.aiName ?? s.name
             if let branch = s.branchName, branch != displayName {
-                return 44
+                return density.branchRowHeight
             }
-            return 34
+            return density.rowHeight
         }
     }
 
@@ -613,13 +754,10 @@ extension SidebarViewController: NSTableViewDataSource, NSTableViewDelegate {
             rv.onKill = { [weak self] in
                 guard let self = self else { return }
                 if !self.selectedSessionIds.isEmpty {
-                    // Kill all selected sessions
+                    // Kill all selected sessions in one batch
                     let idsToKill = self.selectedSessionIds
                     self.selectedSessionIds.removeAll()
-                    for id in idsToKill {
-                        self.onSessionKill?(id)
-                    }
-                    self.forceRefreshSessions()
+                    self.onSessionsKill?(idsToKill)
                 } else {
                     self.onSessionKill?(s.id)
                 }

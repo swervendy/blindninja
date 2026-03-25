@@ -21,17 +21,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             currentTheme = AppTheme.byId(savedId)
         }
 
-        // Set app icon from bundled resource
-        if let iconPath = Bundle.main.path(forResource: "AppIcon", ofType: "png") {
-            if let icon = NSImage(contentsOfFile: iconPath) {
-                NSApp.applicationIconImage = icon
-            }
-        } else {
-            // Fallback: load from source directory during development
-            let devPath = "\(FileManager.default.currentDirectoryPath)/Sources/BlindNinja/Resources/AppIcon.png"
-            if let icon = NSImage(contentsOfFile: devPath) {
-                NSApp.applicationIconImage = icon
-            }
+        // Set app icon — add transparent padding so the macOS dock badge
+        // doesn't bleed over the artwork. Apple's icon grid puts art in
+        // the center ~80% of the canvas with transparent margins.
+        if let rawIcon = loadAppIcon() {
+            let padded = Self.padIcon(rawIcon, insetFraction: 0.10)
+            NSApp.applicationIconImage = padded
         }
 
         // Build the menu bar
@@ -45,13 +40,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Restore persisted sessions, or create a fresh one
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            let splitVC = window.contentViewController as? MainSplitViewController
             SessionManager.shared.restoreSessions()
+
+            // Adopt all restored sessions into the first window
+            for session in SessionManager.shared.listSessions() {
+                splitVC?.adoptSession(session.id)
+            }
 
             ProjectPickerPanel.addRecentProject(SessionManager.shared.projectRoot)
             if SessionManager.shared.listSessions().isEmpty {
-                _ = try? SessionManager.shared.createSession(command: "claude")
+                _ = try? splitVC?.createOwnedSession(command: "claude")
             }
-            (window.contentViewController as? MainSplitViewController)?.selectFirstSession()
+            splitVC?.selectFirstSession()
 
             // Start periodic auto-save
             SessionManager.shared.startAutoSave()
@@ -222,13 +223,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func newWindow() {
         let window = createWindow()
-        // Create a fresh Claude session in the new window
-        _ = try? SessionManager.shared.createSession(command: "claude")
-        (window.contentViewController as? MainSplitViewController)?.selectLastSession()
+        let splitVC = window.contentViewController as? MainSplitViewController
+        _ = try? splitVC?.createOwnedSession(command: "claude")
+        splitVC?.selectLastSession()
     }
 
     @objc private func newClaudeSession() {
-        _ = try? SessionManager.shared.createSession(command: "claude")
+        _ = try? activeSplitVC?.createOwnedSession(command: "claude")
         activeSplitVC?.selectLastSession()
     }
 
@@ -237,9 +238,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func newDeploySession() {
-        _ = try? SessionManager.shared.createSession(
+        _ = try? activeSplitVC?.createOwnedSession(
             name: "Deploy",
-            command: SessionManager.deployCommand
+            command: SessionManager.shared.buildDeployCommand()
         )
         activeSplitVC?.selectLastSession()
     }
@@ -314,18 +315,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem?.button {
-            if let appIcon = NSApp.applicationIconImage ?? NSImage(named: NSImage.applicationIconName) {
-                let size = NSSize(width: 18, height: 18)
-                let resized = NSImage(size: size)
-                resized.lockFocus()
-                appIcon.draw(in: NSRect(origin: .zero, size: size),
-                            from: NSRect(origin: .zero, size: appIcon.size),
-                            operation: .sourceOver, fraction: 1.0)
-                resized.unlockFocus()
-                resized.isTemplate = false
-                button.image = resized
-                button.imagePosition = .imageLeft
-            }
+            button.image = Self.makeMenuBarIcon()
+            button.imagePosition = .imageLeft
             button.title = ""
             button.action = #selector(statusItemClicked)
             button.target = self
@@ -424,6 +415,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusItem?.button?.title = ""
             NSApp.dockTile.badgeLabel = nil
         }
+    }
+
+    // MARK: - Icon Helpers
+
+    private func loadAppIcon() -> NSImage? {
+        if let path = Bundle.main.path(forResource: "AppIcon", ofType: "icns"),
+           let img = NSImage(contentsOfFile: path) { return img }
+        let devPath = "\(FileManager.default.currentDirectoryPath)/Sources/BlindNinja/Resources/AppIcon.icns"
+        return NSImage(contentsOfFile: devPath)
+    }
+
+    /// Add transparent padding around the icon so macOS dock badge
+    /// sits in the margin instead of bleeding over the artwork.
+    static func padIcon(_ icon: NSImage, insetFraction: CGFloat) -> NSImage {
+        let canvas = NSSize(width: 1024, height: 1024)
+        let inset = canvas.width * insetFraction
+        let artRect = NSRect(x: inset, y: inset,
+                             width: canvas.width - inset * 2,
+                             height: canvas.height - inset * 2)
+        let padded = NSImage(size: canvas)
+        padded.lockFocus()
+        // Transparent background (default)
+        icon.draw(in: artRect,
+                  from: NSRect(origin: .zero, size: icon.size),
+                  operation: .sourceOver, fraction: 1.0)
+        padded.unlockFocus()
+        return padded
+    }
+
+    /// Draw a monochrome template icon for the menu bar — a small ninja head
+    /// (circle + horizontal headband line). Template images auto-adapt to
+    /// the menu bar's light/dark appearance.
+    static func makeMenuBarIcon() -> NSImage {
+        let size = NSSize(width: 18, height: 18)
+        let img = NSImage(size: size, flipped: false) { rect in
+            let ctx = NSGraphicsContext.current!.cgContext
+            let cx = rect.midX, cy = rect.midY
+            let r: CGFloat = 7.0
+
+            // Head circle
+            ctx.setFillColor(NSColor.black.cgColor)
+            ctx.fillEllipse(in: CGRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2))
+
+            // Headband — horizontal bar across the eyes
+            let bandH: CGFloat = 2.5
+            let bandRect = CGRect(x: cx - r - 1.5, y: cy - bandH / 2,
+                                  width: r * 2 + 3, height: bandH)
+            ctx.setFillColor(NSColor.white.cgColor)
+            ctx.fill(bandRect)
+
+            // Three dots on headband (traffic light)
+            let dotR: CGFloat = 1.2
+            for i in 0..<3 {
+                let dx = cx - 3.0 + CGFloat(i) * 3.0
+                ctx.fillEllipse(in: CGRect(x: dx - dotR, y: cy - dotR,
+                                           width: dotR * 2, height: dotR * 2))
+            }
+
+            return true
+        }
+        img.isTemplate = true
+        return img
     }
 }
 

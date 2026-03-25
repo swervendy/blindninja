@@ -22,6 +22,9 @@ final class DrawerViewController: NSViewController, TerminalViewDelegate {
     private let tabBar = NSStackView()
     private let contentContainer = NSView()
     private var activeContentView: NSView?
+    /// Track last sent PTY dimensions to avoid redundant resize calls during drag-to-resize
+    private var lastResizeCols: Int = 0
+    private var lastResizeRows: Int = 0
 
     private var heightConstraint: NSLayoutConstraint!
     private(set) var expanded = false
@@ -336,6 +339,9 @@ final class DrawerViewController: NSViewController, TerminalViewDelegate {
         activeContentView?.removeFromSuperview()
         activeContentView = nil
         activeTabIndex = index
+        // Reset resize cache so we send correct dimensions for the new tab
+        lastResizeCols = 0
+        lastResizeRows = 0
 
         // Hide env overlay when switching to a shell tab
         if isEnvShowing { hideEnvOverlay() }
@@ -352,7 +358,11 @@ final class DrawerViewController: NSViewController, TerminalViewDelegate {
 
         // Frame-based layout — SwiftTerm breaks with autolayout constraints
         let inset = NSEdgeInsets(top: 12, left: 8, bottom: 2, right: 4)
-        termView.frame = contentContainer.bounds.insetBy(inset)
+        let frame = contentContainer.bounds.insetBy(inset)
+        // Guard against zero/negative frame when container hasn't been laid out yet
+        if frame.width > 0 && frame.height > 0 {
+            termView.frame = frame
+        }
         termView.autoresizingMask = [.width, .height]
         contentContainer.addSubview(termView)
         activeContentView = termView
@@ -391,8 +401,7 @@ final class DrawerViewController: NSViewController, TerminalViewDelegate {
 
         for (index, sessionId) in tabs.enumerated() {
             let isActive = index == activeTabIndex && !isEnvShowing
-            let allSessions = SessionManager.shared.listSessions()
-            let title = allSessions.first(where: { $0.id == sessionId })?.name ?? "Shell"
+            let title = SessionManager.shared.getSessionName(sessionId) ?? "Shell"
 
             let tabView = DrawerTab(
                 title: title,
@@ -454,6 +463,9 @@ final class DrawerViewController: NSViewController, TerminalViewDelegate {
 
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
         guard let sid = activeTerminalSessionId else { return }
+        guard newCols != lastResizeCols || newRows != lastResizeRows else { return }
+        lastResizeCols = newCols
+        lastResizeRows = newRows
         SessionManager.shared.resizeSession(sid, cols: UInt16(newCols), rows: UInt16(newRows))
     }
     func setTerminalTitle(source: TerminalView, title: String) {}

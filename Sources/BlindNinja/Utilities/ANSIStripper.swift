@@ -3,11 +3,13 @@ import AppKit
 
 extension NSRect {
     func insetBy(_ insets: NSEdgeInsets) -> NSRect {
-        NSRect(
+        let w = max(0, width - insets.left - insets.right)
+        let h = max(0, height - insets.top - insets.bottom)
+        return NSRect(
             x: origin.x + insets.left,
             y: origin.y + insets.bottom,
-            width: width - insets.left - insets.right,
-            height: height - insets.top - insets.bottom
+            width: w,
+            height: h
         )
     }
 }

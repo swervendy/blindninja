@@ -12,6 +12,9 @@ final class TerminalHostViewController: NSViewController, TerminalViewDelegate {
     private let minFontSize: CGFloat = 8
     private let maxFontSize: CGFloat = 28
     private var currentTheme: AppTheme = .blueTitanium
+    /// Track last sent PTY dimensions to avoid redundant resize calls during layout storms
+    private var lastResizeCols: Int = 0
+    private var lastResizeRows: Int = 0
 
     override func loadView() {
         let root = NSView()
@@ -56,15 +59,30 @@ final class TerminalHostViewController: NSViewController, TerminalViewDelegate {
         super.viewDidLayout()
         guard let termView = activeTerminalView, let sessionId = activeSessionId else { return }
         let newFrame = mainTerminalContainer.bounds.insetBy(termInset)
+        guard newFrame.width > 0 && newFrame.height > 0 else { return }
         termView.frame = newFrame
+
+        // Only send PTY resize when dimensions actually change.
+        // During window resize, viewDidLayout fires many times per second —
+        // each TIOCSWINSZ causes TUI apps to re-render, creating output storms
+        // that can cause jumbled text.
         let terminal = termView.getTerminal()
-        SessionManager.shared.resizeSession(sessionId, cols: UInt16(terminal.cols), rows: UInt16(terminal.rows))
+        let cols = terminal.cols
+        let rows = terminal.rows
+        if cols != lastResizeCols || rows != lastResizeRows {
+            lastResizeCols = cols
+            lastResizeRows = rows
+            SessionManager.shared.resizeSession(sessionId, cols: UInt16(cols), rows: UInt16(rows))
+        }
     }
 
     /// Show the terminal for a given session.
     func showSession(_ sessionId: String) {
         activeTerminalView?.removeFromSuperview()
         activeSessionId = sessionId
+        // Reset resize cache so we always send correct dimensions for the new session
+        lastResizeCols = 0
+        lastResizeRows = 0
 
         let termView: TerminalView
         if let existing = SessionManager.shared.terminalViews[sessionId] {
@@ -74,7 +92,10 @@ final class TerminalHostViewController: NSViewController, TerminalViewDelegate {
             SessionManager.shared.registerTerminalView(termView, for: sessionId)
         }
 
-        termView.frame = mainTerminalContainer.bounds.insetBy(termInset)
+        let frame = mainTerminalContainer.bounds.insetBy(termInset)
+        if frame.width > 0 && frame.height > 0 {
+            termView.frame = frame
+        }
         termView.autoresizingMask = [.width, .height]
         mainTerminalContainer.addSubview(termView)
         activeTerminalView = termView
@@ -82,9 +103,10 @@ final class TerminalHostViewController: NSViewController, TerminalViewDelegate {
         // Remove focus from drawer terminal so its cursor hides
         drawer.resignActiveTerminalFocus()
 
-        // Hide native caret for Claude/deploy sessions (they render their own cursor)
-        let session = SessionManager.shared.listSessions().first { $0.id == sessionId }
-        if session?.sessionType != .shell {
+        // Hide native caret for Claude/deploy sessions (they render their own cursor).
+        // Use lightweight accessor instead of full listSessions().
+        let sessionType = SessionManager.shared.getSessionType(sessionId)
+        if sessionType != .shell {
             DispatchQueue.main.async { Self.hideCaretView(in: termView) }
         }
 
@@ -200,24 +222,28 @@ final class TerminalHostViewController: NSViewController, TerminalViewDelegate {
 
     // MARK: - Helpers
 
-    /// Recursively find and hide any NSScroller in the view hierarchy
+    /// Configure SwiftTerm's internal NSScrollView to hide scrollers without breaking scroll behavior
     static func hideScroller(in view: NSView) {
         for subview in view.subviews {
-            if let scroller = subview as? NSScroller {
-                scroller.isHidden = true
-                scroller.alphaValue = 0
+            if let scrollView = subview as? NSScrollView {
+                scrollView.scrollerStyle = .overlay
+                scrollView.hasVerticalScroller = false
+                scrollView.hasHorizontalScroller = false
+                return
             }
             hideScroller(in: subview)
         }
     }
 
-    /// Hide SwiftTerm's CaretView (native cursor) — used for Claude/deploy sessions that render their own cursor
+    /// Hide SwiftTerm's CaretView (native cursor) — used for Claude/deploy sessions that render their own cursor.
+    /// Recurses into subviews in case CaretView is nested inside a scroll view or other container.
     static func hideCaretView(in view: NSView) {
         for subview in view.subviews {
             if String(describing: type(of: subview)) == "CaretView" {
                 subview.isHidden = true
                 return
             }
+            hideCaretView(in: subview)
         }
     }
 
@@ -225,6 +251,10 @@ final class TerminalHostViewController: NSViewController, TerminalViewDelegate {
 
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
         guard let sessionId = activeSessionId else { return }
+        // Deduplicate with viewDidLayout — both paths can fire for the same resize
+        guard newCols != lastResizeCols || newRows != lastResizeRows else { return }
+        lastResizeCols = newCols
+        lastResizeRows = newRows
         SessionManager.shared.resizeSession(sessionId, cols: UInt16(newCols), rows: UInt16(newRows))
     }
 

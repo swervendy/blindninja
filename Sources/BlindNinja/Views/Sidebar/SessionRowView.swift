@@ -1,6 +1,6 @@
 import AppKit
 
-/// A single session row — minimal: state dot + name.
+/// A single session row — state indicator + name, styled by SidebarSettings.
 final class SessionRowView: NSView {
     var onSelect: (() -> Void)?
     var onKill: (() -> Void)?
@@ -15,6 +15,8 @@ final class SessionRowView: NSView {
     private let theme: AppTheme
     private let nameField: NSTextField
     private let dotView: StateDotView
+    private let density: SidebarDensity
+    private let indicatorStyle: IndicatorStyle
     private var renameField: NSTextField?
     private var nameStackView: NSStackView?
     private var isEndingRename = false
@@ -24,8 +26,11 @@ final class SessionRowView: NSView {
         self.isActive = isActive
         self.isMultiSelected = isMultiSelected
         self.theme = theme
+        self.density = SidebarSettings.density
+        self.indicatorStyle = SidebarSettings.indicatorStyle
         self.nameField = NSTextField(labelWithString: "")
-        self.dotView = StateDotView(state: session.state, theme: theme)
+        self.dotView = StateDotView(state: session.state, theme: theme,
+                                     style: indicatorStyle, density: density)
         super.init(frame: .zero)
         setupViews()
     }
@@ -46,15 +51,16 @@ final class SessionRowView: NSView {
             layer?.borderColor = theme.waitingColor.withAlphaComponent(0.4).cgColor
         }
 
-        // State dot
+        // State indicator
         dotView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(dotView)
 
         // Session name
         let displayName = session.customName ?? session.aiName ?? session.name
         nameField.stringValue = displayName
-        nameField.font = .systemFont(ofSize: 12, weight: session.hasUnread ? .semibold : .medium)
-        nameField.textColor = isActive ? theme.sidebarText : theme.sidebarText.withAlphaComponent(0.75)
+        nameField.font = .systemFont(ofSize: density.nameFontSize,
+                                      weight: session.hasUnread ? .semibold : .medium)
+        nameField.textColor = isActive ? theme.sidebarText : theme.sidebarText.withAlphaComponent(0.85)
         nameField.isBordered = false
         nameField.isEditable = false
         nameField.drawsBackground = false
@@ -66,7 +72,7 @@ final class SessionRowView: NSView {
         var branchLabel: NSTextField? = nil
         if let branch = session.branchName, branch != displayName {
             let bl = NSTextField(labelWithString: branch)
-            bl.font = .systemFont(ofSize: 9, weight: .regular)
+            bl.font = .systemFont(ofSize: density.branchFontSize, weight: .regular)
             bl.textColor = theme.sidebarTextSecondary.withAlphaComponent(0.5)
             bl.lineBreakMode = .byTruncatingTail
             bl.maximumNumberOfLines = 1
@@ -90,7 +96,7 @@ final class SessionRowView: NSView {
         // Time ago label
         let timeAgo = formatTimeAgo(session.lastActivity)
         let timeLabel = NSTextField(labelWithString: timeAgo)
-        timeLabel.font = .monospacedDigitSystemFont(ofSize: 9, weight: .regular)
+        timeLabel.font = .monospacedDigitSystemFont(ofSize: density.branchFontSize, weight: .regular)
         timeLabel.textColor = theme.sidebarTextSecondary.withAlphaComponent(0.6)
         timeLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(timeLabel)
@@ -102,7 +108,7 @@ final class SessionRowView: NSView {
         // Star (inserted between name and time)
         if session.starred {
             let star = NSTextField(labelWithString: "\u{2605}")
-            star.font = .systemFont(ofSize: 9)
+            star.font = .systemFont(ofSize: density.branchFontSize)
             star.textColor = theme.workingColor.withAlphaComponent(0.8)
             star.setContentCompressionResistancePriority(.required, for: .horizontal)
             star.setContentHuggingPriority(.required, for: .horizontal)
@@ -118,17 +124,37 @@ final class SessionRowView: NSView {
 
         nameField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
+        let iSize = dotView.indicatorSize
         let nameAnchorView: NSView = nameStackView ?? nameField
+
+        // Layout depends on indicator style
+        switch indicatorStyle {
+        case .bar:
+            // Bar sits at left edge, stretches vertically
+            NSLayoutConstraint.activate([
+                dotView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+                dotView.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+                dotView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+                dotView.widthAnchor.constraint(equalToConstant: iSize.width),
+
+                nameAnchorView.leadingAnchor.constraint(equalTo: dotView.trailingAnchor, constant: 10),
+                nameAnchorView.centerYAnchor.constraint(equalTo: centerYAnchor),
+                nameAnchorView.trailingAnchor.constraint(lessThanOrEqualTo: nameTrailingAnchor, constant: nameTrailingConstant),
+            ])
+        case .dot, .ring:
+            NSLayoutConstraint.activate([
+                dotView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+                dotView.centerYAnchor.constraint(equalTo: centerYAnchor),
+                dotView.widthAnchor.constraint(equalToConstant: iSize.width),
+                dotView.heightAnchor.constraint(equalToConstant: iSize.height),
+
+                nameAnchorView.leadingAnchor.constraint(equalTo: dotView.trailingAnchor, constant: 10),
+                nameAnchorView.centerYAnchor.constraint(equalTo: centerYAnchor),
+                nameAnchorView.trailingAnchor.constraint(lessThanOrEqualTo: nameTrailingAnchor, constant: nameTrailingConstant),
+            ])
+        }
+
         NSLayoutConstraint.activate([
-            dotView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            dotView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            dotView.widthAnchor.constraint(equalToConstant: 6),
-            dotView.heightAnchor.constraint(equalToConstant: 6),
-
-            nameAnchorView.leadingAnchor.constraint(equalTo: dotView.trailingAnchor, constant: 10),
-            nameAnchorView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            nameAnchorView.trailingAnchor.constraint(lessThanOrEqualTo: nameTrailingAnchor, constant: nameTrailingConstant),
-
             timeLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
             timeLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
@@ -148,7 +174,7 @@ final class SessionRowView: NSView {
         guard renameField == nil else { return }
         let displayName = session.customName ?? session.aiName ?? session.name
         let field = NSTextField(string: displayName)
-        field.font = .systemFont(ofSize: 13)
+        field.font = .systemFont(ofSize: density.nameFontSize)
         field.textColor = theme.sidebarText
         field.backgroundColor = theme.headerBackground
         field.drawsBackground = true
