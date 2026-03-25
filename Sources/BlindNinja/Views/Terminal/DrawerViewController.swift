@@ -471,6 +471,13 @@ final class DrawerViewController: NSViewController, TerminalViewDelegate {
     func setTerminalTitle(source: TerminalView, title: String) {}
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
         guard let sid = activeTerminalSessionId else { return }
+        // Translate kitty keypad codes to standard CSI (same issue as main terminal)
+        if data.count >= 5 && data.count <= 10 && data.first == 0x1b,
+           let str = String(bytes: data, encoding: .utf8),
+           let replacement = TerminalHostViewController.kittyCsiReplacements[str] {
+            SessionManager.shared.writeToSession(sid, data: Data(replacement))
+            return
+        }
         SessionManager.shared.writeToSession(sid, data: Data(data))
     }
     func scrolled(source: TerminalView, position: Double) {}

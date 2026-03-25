@@ -458,14 +458,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ctx.setFillColor(NSColor.black.cgColor)
             ctx.fillEllipse(in: CGRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2))
 
-            // Headband — horizontal bar across the eyes
-            let bandH: CGFloat = 2.5
-            let bandRect = CGRect(x: cx - r - 1.5, y: cy - bandH / 2,
-                                  width: r * 2 + 3, height: bandH)
+            // Headband — horizontal bar across the eyes, clipped to circle
+            let bandH: CGFloat = 3.0
+            let bandRect = CGRect(x: cx - r + 0.5, y: cy - bandH / 2,
+                                  width: r * 2 - 1, height: bandH)
             ctx.setFillColor(NSColor.white.cgColor)
             ctx.fill(bandRect)
 
-            // Three dots on headband (traffic light)
+            // Three dots on headband (traffic light) — black so they show in template mode
+            ctx.setFillColor(NSColor.black.cgColor)
             let dotR: CGFloat = 1.2
             for i in 0..<3 {
                 let dx = cx - 3.0 + CGFloat(i) * 3.0

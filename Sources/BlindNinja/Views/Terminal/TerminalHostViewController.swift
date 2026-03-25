@@ -15,6 +15,8 @@ final class TerminalHostViewController: NSViewController, TerminalViewDelegate {
     /// Track last sent PTY dimensions to avoid redundant resize calls during layout storms
     private var lastResizeCols: Int = 0
     private var lastResizeRows: Int = 0
+    /// Debounce timer for PTY resize — prevents resize storms during window drag
+    private var resizeDebounce: DispatchWorkItem?
 
     override func loadView() {
         let root = NSView()
@@ -62,18 +64,27 @@ final class TerminalHostViewController: NSViewController, TerminalViewDelegate {
         guard newFrame.width > 0 && newFrame.height > 0 else { return }
         termView.frame = newFrame
 
-        // Only send PTY resize when dimensions actually change.
-        // During window resize, viewDidLayout fires many times per second —
-        // each TIOCSWINSZ causes TUI apps to re-render, creating output storms
-        // that can cause jumbled text.
+        // Debounce PTY resize to prevent resize storms during window drag.
+        // SwiftTerm updates its internal grid immediately when the frame changes,
+        // but we delay sending TIOCSWINSZ to the PTY so TUI apps only re-render
+        // once the resize settles — preventing jumbled output.
         let terminal = termView.getTerminal()
         let cols = terminal.cols
         let rows = terminal.rows
-        if cols != lastResizeCols || rows != lastResizeRows {
-            lastResizeCols = cols
-            lastResizeRows = rows
-            SessionManager.shared.resizeSession(sessionId, cols: UInt16(cols), rows: UInt16(rows))
+        guard cols != lastResizeCols || rows != lastResizeRows else { return }
+
+        resizeDebounce?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, self.activeSessionId == sessionId else { return }
+            let t = termView.getTerminal()
+            let c = t.cols, r = t.rows
+            guard c != self.lastResizeCols || r != self.lastResizeRows else { return }
+            self.lastResizeCols = c
+            self.lastResizeRows = r
+            SessionManager.shared.resizeSession(sessionId, cols: UInt16(c), rows: UInt16(r))
         }
+        resizeDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
     }
 
     /// Show the terminal for a given session.
@@ -99,6 +110,15 @@ final class TerminalHostViewController: NSViewController, TerminalViewDelegate {
         termView.autoresizingMask = [.width, .height]
         mainTerminalContainer.addSubview(termView)
         activeTerminalView = termView
+
+        // Send immediate resize for the new session — don't debounce the initial size sync
+        let terminal = termView.getTerminal()
+        let cols = terminal.cols, rows = terminal.rows
+        if cols > 0 && rows > 0 {
+            lastResizeCols = cols
+            lastResizeRows = rows
+            SessionManager.shared.resizeSession(sessionId, cols: UInt16(cols), rows: UInt16(rows))
+        }
 
         // Remove focus from drawer terminal so its cursor hides
         drawer.resignActiveTerminalFocus()
@@ -251,11 +271,20 @@ final class TerminalHostViewController: NSViewController, TerminalViewDelegate {
 
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
         guard let sessionId = activeSessionId else { return }
-        // Deduplicate with viewDidLayout — both paths can fire for the same resize
         guard newCols != lastResizeCols || newRows != lastResizeRows else { return }
-        lastResizeCols = newCols
-        lastResizeRows = newRows
-        SessionManager.shared.resizeSession(sessionId, cols: UInt16(newCols), rows: UInt16(newRows))
+        // Debounce — viewDidLayout already handles the delayed PTY resize
+        resizeDebounce?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, self.activeSessionId == sessionId else { return }
+            let t = source.getTerminal()
+            let c = t.cols, r = t.rows
+            guard c != self.lastResizeCols || r != self.lastResizeRows else { return }
+            self.lastResizeCols = c
+            self.lastResizeRows = r
+            SessionManager.shared.resizeSession(sessionId, cols: UInt16(c), rows: UInt16(r))
+        }
+        resizeDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
     }
 
     func setTerminalTitle(source: TerminalView, title: String) {
@@ -263,8 +292,40 @@ final class TerminalHostViewController: NSViewController, TerminalViewDelegate {
         SessionManager.shared.parseTerminalTitle(sessionId, title: title)
     }
 
+    /// Kitty keyboard protocol keypad codes → standard CSI sequences.
+    /// macOS reports arrow keys with .numericPad modifier, so SwiftTerm maps them to
+    /// keypad variants (e.g. keypadDown=57420) instead of regular arrows. Claude Code's
+    /// TUI components (e.g. /resume search) don't handle these, showing raw codes.
+    static let kittyCsiReplacements: [String: [UInt8]] = {
+        let esc: UInt8 = 0x1b
+        return [
+            // Keypad arrow keys (macOS arrow keys have .numericPad flag)
+            "\u{1b}[57419u": [esc, 0x5b, 0x41],  // keypadUp    → ESC[A
+            "\u{1b}[57420u": [esc, 0x5b, 0x42],  // keypadDown  → ESC[B
+            "\u{1b}[57422u": [esc, 0x5b, 0x43],  // keypadRight → ESC[C
+            "\u{1b}[57421u": [esc, 0x5b, 0x44],  // keypadLeft  → ESC[D
+            // Keypad nav keys
+            "\u{1b}[57423u": [esc, 0x5b, 0x48],  // keypadHome  → ESC[H
+            "\u{1b}[57424u": [esc, 0x5b, 0x46],  // keypadEnd   → ESC[F
+            "\u{1b}[57425u": [esc, 0x5b, 0x35, 0x7e], // keypadPgUp   → ESC[5~
+            "\u{1b}[57426u": [esc, 0x5b, 0x36, 0x7e], // keypadPgDown → ESC[6~
+            "\u{1b}[57428u": [esc, 0x5b, 0x32, 0x7e], // keypadInsert → ESC[2~
+            "\u{1b}[57429u": [esc, 0x5b, 0x33, 0x7e], // keypadDelete → ESC[3~
+        ]
+    }()
+
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
         guard let sessionId = activeSessionId else { return }
+
+        // Check for kitty-encoded navigation keys and translate to standard CSI
+        if data.count >= 5 && data.count <= 10 && data.first == 0x1b {
+            if let str = String(bytes: data, encoding: .utf8),
+               let replacement = Self.kittyCsiReplacements[str] {
+                SessionManager.shared.writeToSession(sessionId, data: Data(replacement))
+                return
+            }
+        }
+
         SessionManager.shared.writeToSession(sessionId, data: Data(data))
     }
 

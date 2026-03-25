@@ -75,13 +75,13 @@ final class StateDetector {
             "\\(search\\)",
             "\\(bash\\)",
             "Streaming\\.\\.\\.",
-            // Claude Code status line: spinner + verb + ellipsis (e.g. "✱ Roosting…", "⠋ Running…")
+            // Claude Code reliable indicators
+            "esc to interrupt",          // always shown when Claude is processing
+            "\\d+\\.?\\d*k? tokens",     // token count in status line (e.g. "4.4k tokens", "350 tokens")
+            "Queried \\w+",              // MCP query indicator
+            "\\w+\u{2026}\\s+\\(\\d+",   // Verb… (time — e.g. "Proofing… (2m"
             "Running\u{2026}",           // Running…
             "Running\\.\\.\\.",          // Running...
-            "\\u{2731}\\s+\\w+\u{2026}", // ✱ Verb…
-            "\\d+m\\s+\\d+s\\s+.*tokens", // time + token count in status line
-            "thought for \\d+",          // "thought for 4s" in status line
-            "\\u{2502}\\s+Running",      // │ Running (tool execution indicator)
         ]
 
         // Claude has exited back to shell

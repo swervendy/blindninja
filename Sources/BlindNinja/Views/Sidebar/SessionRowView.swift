@@ -141,7 +141,7 @@ final class SessionRowView: NSView {
                 nameAnchorView.centerYAnchor.constraint(equalTo: centerYAnchor),
                 nameAnchorView.trailingAnchor.constraint(lessThanOrEqualTo: nameTrailingAnchor, constant: nameTrailingConstant),
             ])
-        case .dot, .ring:
+        case .dot, .ring, .glow:
             NSLayoutConstraint.activate([
                 dotView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
                 dotView.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -149,6 +149,15 @@ final class SessionRowView: NSView {
                 dotView.heightAnchor.constraint(equalToConstant: iSize.height),
 
                 nameAnchorView.leadingAnchor.constraint(equalTo: dotView.trailingAnchor, constant: 10),
+                nameAnchorView.centerYAnchor.constraint(equalTo: centerYAnchor),
+                nameAnchorView.trailingAnchor.constraint(lessThanOrEqualTo: nameTrailingAnchor, constant: nameTrailingConstant),
+            ])
+        case .none:
+            NSLayoutConstraint.activate([
+                dotView.widthAnchor.constraint(equalToConstant: 0),
+                dotView.heightAnchor.constraint(equalToConstant: 0),
+
+                nameAnchorView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
                 nameAnchorView.centerYAnchor.constraint(equalTo: centerYAnchor),
                 nameAnchorView.trailingAnchor.constraint(lessThanOrEqualTo: nameTrailingAnchor, constant: nameTrailingConstant),
             ])

@@ -24,11 +24,13 @@ final class StateDotView: NSView {
     /// Intrinsic size based on style & density.
     var indicatorSize: NSSize {
         switch style {
-        case .dot, .ring:
+        case .dot, .ring, .glow:
             let s = density.dotSize
             return NSSize(width: s, height: s)
         case .bar:
             return NSSize(width: density.barWidth, height: 0) // height stretches to row
+        case .none:
+            return NSSize(width: 0, height: 0)
         }
     }
 
@@ -37,10 +39,12 @@ final class StateDotView: NSView {
     override func layout() {
         super.layout()
         switch style {
-        case .dot, .ring:
+        case .dot, .ring, .glow:
             layer?.cornerRadius = min(bounds.width, bounds.height) / 2
         case .bar:
             layer?.cornerRadius = density.barWidth / 2
+        case .none:
+            break
         }
     }
 
@@ -59,6 +63,10 @@ final class StateDotView: NSView {
             setupRing(color: color, layer: layer)
         case .bar:
             setupBar(color: color, layer: layer)
+        case .glow:
+            setupGlow(color: color, layer: layer)
+        case .none:
+            layer.backgroundColor = NSColor.clear.cgColor
         }
     }
 
@@ -150,6 +158,39 @@ final class StateDotView: NSView {
         case .working:
             addPulse(color: color, layer: layer)
         default:
+            break
+        }
+    }
+
+    // MARK: - Glow style (soft radial glow, no hard edge)
+
+    private func setupGlow(color: NSColor, layer: CALayer) {
+        layer.backgroundColor = color.cgColor
+        layer.cornerRadius = density.dotSize / 2
+
+        switch state {
+        case .blocked:
+            layer.shadowColor = color.cgColor
+            layer.shadowOffset = .zero
+            layer.shadowRadius = 8
+            layer.shadowOpacity = 0.9
+        case .working:
+            layer.shadowColor = color.cgColor
+            layer.shadowOffset = .zero
+            layer.shadowRadius = 6
+            layer.shadowOpacity = 0.7
+            addPulse(color: color, layer: layer)
+        case .waiting:
+            layer.shadowColor = color.cgColor
+            layer.shadowOffset = .zero
+            layer.shadowRadius = 4
+            layer.shadowOpacity = 0.5
+        case .idle:
+            layer.shadowColor = color.cgColor
+            layer.shadowOffset = .zero
+            layer.shadowRadius = 3
+            layer.shadowOpacity = 0.3
+        case .new:
             break
         }
     }
